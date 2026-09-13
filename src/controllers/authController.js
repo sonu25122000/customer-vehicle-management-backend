@@ -29,10 +29,15 @@ function signToken(admin, sessionId, remember) {
 }
 
 function cookieOptions(remember) {
+  const isProduction = process.env.NODE_ENV === 'production';
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    // 'none' is required for the cookie to be sent on cross-site requests (frontend and
+    // backend on different domains), which in turn requires secure:true (HTTPS-only) —
+    // fine in production since Vercel serves everything over HTTPS. Locally, both run on
+    // http://localhost, so 'lax' + non-secure is what actually works there.
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
     maxAge: remember ? REMEMBER_SESSION_MS : DEFAULT_SESSION_MS,
   };
 }

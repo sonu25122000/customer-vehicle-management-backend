@@ -16,6 +16,7 @@ const SORT_MAP = {
 };
 
 const CUSTOMER_TYPES = ['VIP', 'Good', 'Bad'];
+const PROFILE_VERIFIED_STATUSES = ['Accepted', 'Rejected', 'Pending'];
 const MAX_NOTES_WORDS = 300;
 
 const dateRangeValidators = [
@@ -127,6 +128,10 @@ export const customerValidators = [
     .isInt({ min: 1, max: 5 })
     .withMessage('Rating must be between 1 and 5'),
   body('customerType').optional({ checkFalsy: true }).isIn(CUSTOMER_TYPES).withMessage('Invalid customer type'),
+  body('profileVerified')
+    .optional({ checkFalsy: true })
+    .isIn(PROFILE_VERIFIED_STATUSES)
+    .withMessage('Invalid profile verified status'),
   notesValidator,
 ];
 
@@ -190,7 +195,7 @@ export const getCustomer = asyncHandler(async (req, res) => {
 export const createCustomer = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { name, mobile1, mobile2, rating, notes, customerType } = req.body;
+  const { name, mobile1, mobile2, rating, notes, customerType, profileVerified } = req.body;
 
   const duplicateMobile = await Customer.findOne({ mobile1: mobile1.trim(), isDeleted: false });
   if (duplicateMobile) {
@@ -204,6 +209,7 @@ export const createCustomer = asyncHandler(async (req, res) => {
     rating: rating || undefined,
     notes,
     customerType: customerType || undefined,
+    profileVerified: profileVerified || undefined,
   });
 
   res.status(201).json({ data: customer, message: 'Customer created successfully' });
@@ -213,7 +219,7 @@ export const createCustomer = asyncHandler(async (req, res) => {
 export const updateCustomer = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { name, mobile1, mobile2, rating, notes, customerType } = req.body;
+  const { name, mobile1, mobile2, rating, notes, customerType, profileVerified } = req.body;
 
   const duplicateMobile = await Customer.findOne({
     _id: { $ne: req.params.id },
@@ -233,6 +239,7 @@ export const updateCustomer = asyncHandler(async (req, res) => {
       rating: rating || undefined,
       notes,
       customerType: customerType || undefined,
+      profileVerified: profileVerified || undefined,
     },
     { new: true, runValidators: true }
   );

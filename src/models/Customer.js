@@ -34,6 +34,11 @@ const customerSchema = new mongoose.Schema(
       enum: ['VIP', 'Good', 'Bad'],
       default: 'Good',
     },
+    profileVerified: {
+      type: String,
+      enum: ['Accepted', 'Rejected', 'Pending'],
+      default: 'Pending',
+    },
     // Uploaded separately from a dedicated Documents screen, after the customer is created —
     // stored as base64 data URIs directly on the document, same approach as vehicle photos.
     documents: {

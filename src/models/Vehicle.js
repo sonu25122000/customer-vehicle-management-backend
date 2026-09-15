@@ -23,7 +23,7 @@ const vehicleSchema = new mongoose.Schema(
       enum: [
         'Sedan', 'Hatchback', 'SUV', 'Compact',
         'Sports', 'Cruiser', 'Commuter', 'Off-Road',
-        'Standard', 'Electric', 'Gearless',
+        'Standard', 'Electric',
       ],
     },
     transmission: {
@@ -38,22 +38,24 @@ const vehicleSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['Active', 'In Hold', 'Inactive'],
-      default: 'In Hold',
+      enum: ['Active', 'On Hold', 'Inactive'],
+      default: 'On Hold',
     },
     make: {
       type: String,
+      required: [true, 'Make is required'],
       trim: true,
       default: '',
     },
     model: {
       type: String,
+      required: [true, 'Model is required'],
       trim: true,
       default: '',
     },
     ownerName: {
       type: String,
-      required: [true, 'Owner/Customer name is required'],
+      required: [true, 'Owner/Host name is required'],
       trim: true,
     },
     ownerMobile: {

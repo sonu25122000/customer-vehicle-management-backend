@@ -14,7 +14,7 @@ export const VEHICLE_TYPES = ['Car', 'Bike', 'Scooty'];
 export const CATEGORY_MAP = {
   Car: ['Sedan', 'Hatchback', 'SUV', 'Compact'],
   Bike: ['Sports', 'Cruiser', 'Commuter', 'Off-Road'],
-  Scooty: ['Standard', 'Electric', 'Gearless'],
+  Scooty: ['Standard', 'Electric'],
 };
 export const MAKE_MAP = {
   Car: [
@@ -58,7 +58,7 @@ export const MODEL_MAP = {
 };
 export const TRANSMISSIONS = ['Manual', 'Automatic'];
 export const FUEL_TYPES = ['Petrol', 'Diesel', 'CNG', 'Electric'];
-export const VEHICLE_STATUSES = ['Active', 'In Hold', 'Inactive'];
+export const VEHICLE_STATUSES = ['Active', 'On Hold', 'Inactive'];
 const VEHICLE_NO_RE = /^[A-Z]{2}[0-9]{1,2}[A-Z]{1,2}[0-9]{4}$/;
 
 export const listValidators = [
@@ -99,8 +99,9 @@ export const vehicleValidators = [
       return true;
     }),
   body('make')
-    .optional({ checkFalsy: true })
     .trim()
+    .notEmpty()
+    .withMessage('Make is required')
     .custom((value, { req }) => {
       const allowed = MAKE_MAP[req.body.vehicleType] || [];
       if (!allowed.includes(value)) {
@@ -109,8 +110,9 @@ export const vehicleValidators = [
       return true;
     }),
   body('model')
-    .optional({ checkFalsy: true })
     .trim()
+    .notEmpty()
+    .withMessage('Model is required')
     .custom((value, { req }) => {
       const allowed = MODEL_MAP[req.body.make] || [];
       if (!allowed.includes(value)) {
@@ -126,7 +128,7 @@ export const vehicleValidators = [
     .withMessage('Invalid transmission'),
   body('fuel').trim().notEmpty().withMessage('Fuel type is required').isIn(FUEL_TYPES).withMessage('Invalid fuel type'),
   body('status').optional({ checkFalsy: true }).isIn(VEHICLE_STATUSES).withMessage('Invalid vehicle status'),
-  body('ownerName').trim().notEmpty().withMessage('Owner/Customer name is required'),
+  body('ownerName').trim().notEmpty().withMessage('Owner/Host name is required'),
   body('ownerMobile')
     .trim()
     .notEmpty()
@@ -290,12 +292,16 @@ export const listVehicles = asyncHandler(async (req, res) => {
   });
 });
 
-// GET /api/vehicles/stats — Total / On Trip / Available, for the Vehicles page stat tiles
-export const getVehicleStats = asyncHandler(async (req, res) => {
-  const total = await Vehicle.countDocuments({ isDeleted: false });
-  const onTripVehicleIds = await Trip.distinct('vehicle', { isDeleted: false, status: 'On Trip' });
+// GET /api/vehicles/stats — Total / Active / On Hold / On Trip / Available, for the Vehicles page stat tiles
+export const getVehicleStats = asyncHandler(async (_req, res) => {
+  const [total, active, onHold, onTripVehicleIds] = await Promise.all([
+    Vehicle.countDocuments({ isDeleted: false }),
+    Vehicle.countDocuments({ isDeleted: false, status: 'Active' }),
+    Vehicle.countDocuments({ isDeleted: false, status: 'On Hold' }),
+    Trip.distinct('vehicle', { isDeleted: false, status: 'On Trip' }),
+  ]);
   const onTrip = onTripVehicleIds.length;
-  res.status(200).json({ data: { total, onTrip, available: Math.max(total - onTrip, 0) } });
+  res.status(200).json({ data: { total, active, onHold, onTrip, available: Math.max(total - onTrip, 0) } });
 });
 
 // GET /api/vehicles/options?activeOnly=true — lightweight vehicle-picker list.
@@ -349,25 +355,32 @@ async function findDuplicate(vehicleNo, excludeId) {
   return Vehicle.findOne(filter);
 }
 
+// A vehicle can only go Active once all 4 photo sides are on file — a freshly created vehicle
+// never has any yet, so it can never be created Active either.
+function hasAllPhotoSides(photos) {
+  const p = photos || {};
+  return Boolean(p.front && p.back && p.passengerSide && p.driverSide);
+}
+
 // POST /api/vehicles
 export const createVehicle = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status, make, model, ownerName, ownerMobile } =
-    req.body;
+  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, make, model, ownerName, ownerMobile } = req.body;
 
   const duplicate = await findDuplicate(vehicleNo);
   if (duplicate) {
     return res.status(409).json({ message: 'A vehicle with this vehicle number already exists' });
   }
 
+  // A new vehicle always starts "On Hold" — never accept an initial status from the client
+  // (the schema default applies), matching the create form which only offers that one option.
   const vehicle = await Vehicle.create({
     vehicleNo,
     vehicleType,
     vehicleCategory,
     transmission,
     fuel,
-    status: status || undefined,
     make,
     model,
     ownerName,
@@ -388,15 +401,20 @@ export const updateVehicle = asyncHandler(async (req, res) => {
     return res.status(409).json({ message: 'A vehicle with this vehicle number already exists' });
   }
 
-  const vehicle = await Vehicle.findOneAndUpdate(
-    { _id: req.params.id, isDeleted: false },
-    { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status: status || 'In Hold', make, model, ownerName, ownerMobile },
-    { new: true, runValidators: true }
-  );
-
+  const vehicle = await Vehicle.findOne({ _id: req.params.id, isDeleted: false });
   if (!vehicle) {
     return res.status(404).json({ message: 'Vehicle not found' });
   }
+
+  const nextStatus = status || 'On Hold';
+  if (nextStatus === 'Active' && !hasAllPhotoSides(vehicle.photos)) {
+    return res.status(400).json({
+      message: 'Upload all 4 vehicle photos (front, back, passenger side, driver side) before setting status to Active',
+    });
+  }
+
+  vehicle.set({ vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status: nextStatus, make, model, ownerName, ownerMobile });
+  await vehicle.save();
 
   res.status(200).json({ data: vehicle, message: 'Vehicle updated successfully' });
 });

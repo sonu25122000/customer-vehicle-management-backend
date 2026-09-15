@@ -28,15 +28,18 @@ const ALLOWED_STATUS_TRANSITIONS = {
 // this is enforced server-side so it can't be bypassed by calling the API directly.
 const AMOUNT_FIELDS = ['amount', 'tollCharges', 'advance', 'securityDeposit'];
 const EDITABLE_FIELDS_BY_STATUS = {
+  // Customer is never editable once a trip exists — only settable at creation time (see
+  // createTrip). Only vehicle/start date+time can still change while "Yet to Start".
   'Yet to Start': [
-    'customer', 'vehicle', 'startDate', 'startTime', 'endDate', 'endTime',
+    'vehicle', 'startDate', 'startTime', 'endDate', 'endTime',
     ...AMOUNT_FIELDS, 'startOdometer', 'endOdometer', 'status',
   ],
   // Vehicle/customer/start date+time are locked once a trip is under way — see checkVehicleRentals's
   // "Trip lifecycle" rules. Reschedule (POST /:id/reschedule) is the only way to change start date/time.
   'On Trip': ['endDate', 'endTime', ...AMOUNT_FIELDS, 'startOdometer', 'endOdometer', 'status', 'rating'],
-  // Only amount-related fields (+ rating, which only ever applies once Completed) remain editable.
-  Completed: [...AMOUNT_FIELDS, 'rating'],
+  // Amount-related fields, odometer readings and rating remain editable after completion — e.g.
+  // correcting the final odometer reading once the vehicle is back.
+  Completed: [...AMOUNT_FIELDS, 'startOdometer', 'endOdometer', 'rating'],
   // Cancellation is a one-shot action (see cancelTrip) — no further edits after that.
   Cancelled: [],
 };
@@ -295,9 +298,13 @@ export const updateTrip = asyncHandler(async (req, res) => {
   // --- Cancellation: status + refundAmount only, everything else keeps its existing value ---
   if (requestedStatus === 'Cancelled' && existing.status !== 'Cancelled') {
     const originalAmount = Number(existing.amount) || 0;
+    const originalAdvance = Number(existing.advance) || 0;
+    // Only the advance already paid can come back — never more than that, and never more than
+    // the trip amount either (in case advance was somehow left greater, e.g. legacy data).
+    const maxRefund = Math.min(originalAdvance, originalAmount);
     const refundAmount = req.body.refundAmount === undefined || req.body.refundAmount === '' ? 0 : Number(req.body.refundAmount);
-    if (refundAmount > originalAmount) {
-      return res.status(400).json({ message: 'Refund amount cannot be more than the trip amount' });
+    if (refundAmount > maxRefund) {
+      return res.status(400).json({ message: `Refund amount cannot be more than the advance paid (₹${maxRefund})` });
     }
 
     existing.status = 'Cancelled';
@@ -341,6 +348,18 @@ export const updateTrip = asyncHandler(async (req, res) => {
 
   const lockError = await assertVehicleTripAvailable(next.vehicle, requestedStatus, req.params.id);
   if (lockError) return res.status(409).json({ message: lockError });
+
+  // A trip can't be started (moved to "On Trip") until the customer's KYC documents are on
+  // file — selfie, driving licence and Aadhaar. "Other" stays optional.
+  if (requestedStatus === 'On Trip' && existing.status !== 'On Trip') {
+    const customerDoc = await Customer.findOne({ _id: next.customer, isDeleted: false });
+    const docs = customerDoc?.documents || {};
+    if (!(docs.selfie && docs.drivingLicence && docs.aadhaar)) {
+      return res.status(400).json({
+        message: "Upload the customer's selfie, driving licence and Aadhaar before starting this trip",
+      });
+    }
+  }
 
   // Rating only ever applies once the trip is Completed.
   existing.rating = requestedStatus === 'Completed' && next.rating ? next.rating : existing.rating;

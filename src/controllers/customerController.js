@@ -195,21 +195,23 @@ export const getCustomer = asyncHandler(async (req, res) => {
 export const createCustomer = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { name, mobile1, mobile2, rating, notes, customerType, profileVerified } = req.body;
+  const { name, mobile1, mobile2, notes, customerType } = req.body;
 
   const duplicateMobile = await Customer.findOne({ mobile1: mobile1.trim(), isDeleted: false });
   if (duplicateMobile) {
     return res.status(409).json({ message: 'A customer with this mobile number already exists' });
   }
 
+  // A brand new customer can't be rated yet and always starts out unverified — rating and
+  // profileVerified are never accepted from the client at creation time (see CustomerFormModal,
+  // which disables both controls on the create form for the same reason).
   const customer = await Customer.create({
     name,
     mobile1,
     mobile2,
-    rating: rating || undefined,
     notes,
     customerType: customerType || undefined,
-    profileVerified: profileVerified || undefined,
+    profileVerified: 'Pending',
   });
 
   res.status(201).json({ data: customer, message: 'Customer created successfully' });

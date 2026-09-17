@@ -2,6 +2,7 @@ import { body, query, validationResult } from 'express-validator';
 import mongoose from 'mongoose';
 import Vehicle from '../models/Vehicle.js';
 import Trip from '../models/Trip.js';
+import VehicleCatalog from '../models/VehicleCatalog.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
 function escapeRegex(str) {
@@ -10,52 +11,9 @@ function escapeRegex(str) {
 
 const OBJECT_ID_RE = /^[0-9a-fA-F]{24}$/;
 
-export const VEHICLE_TYPES = ['Car', 'Bike', 'Scooty'];
-export const CATEGORY_MAP = {
-  Car: ['Sedan', 'Hatchback', 'SUV', 'Compact'],
-  Bike: ['Sports', 'Cruiser', 'Commuter', 'Off-Road'],
-  Scooty: ['Standard', 'Electric'],
-};
-export const MAKE_MAP = {
-  Car: [
-    'Maruti Suzuki', 'Hyundai', 'Tata', 'Mahindra', 'Honda', 'Toyota', 'Kia',
-    'Ford', 'Volkswagen', 'BMW', 'Mercedes-Benz', 'Audi', 'Renault', 'Nissan', 'Skoda',
-  ],
-  Bike: ['Royal Enfield', 'Bajaj', 'Hero MotoCorp', 'TVS', 'Yamaha', 'Honda', 'Suzuki', 'KTM', 'Kawasaki', 'Harley-Davidson'],
-  Scooty: ['Honda', 'TVS', 'Bajaj', 'Suzuki', 'Hero MotoCorp', 'Yamaha', 'Ather', 'Ola Electric', 'Vespa', 'Aprilia'],
-};
-// Model options depend on Make — same cross-field pattern as vehicleCategory/make depending on
-// vehicleType. Not exhaustive, just enough real-world models per make for the dropdown to be useful.
-export const MODEL_MAP = {
-  'Maruti Suzuki': ['Swift', 'Baleno', 'Dzire', 'WagonR', 'Alto', 'Ertiga', 'Brezza'],
-  Hyundai: ['i10', 'i20', 'Venue', 'Creta', 'Verna', 'Aura'],
-  Tata: ['Nexon', 'Punch', 'Tiago', 'Altroz', 'Harrier', 'Safari'],
-  Mahindra: ['XUV700', 'Scorpio', 'Bolero', 'Thar', 'XUV300'],
-  Honda: ['City', 'Amaze', 'Activa', 'Shine', 'Unicorn'],
-  Toyota: ['Innova', 'Fortuner', 'Glanza', 'Urban Cruiser'],
-  Kia: ['Seltos', 'Sonet', 'Carens'],
-  Ford: ['EcoSport', 'Figo', 'Endeavour'],
-  Volkswagen: ['Polo', 'Vento', 'Taigun'],
-  BMW: ['3 Series', '5 Series', 'X1'],
-  'Mercedes-Benz': ['C-Class', 'E-Class', 'GLA'],
-  Audi: ['A4', 'A6', 'Q3'],
-  Renault: ['Kwid', 'Triber', 'Kiger'],
-  Nissan: ['Magnite', 'Kicks'],
-  Skoda: ['Rapid', 'Octavia', 'Kushaq'],
-  'Royal Enfield': ['Classic 350', 'Bullet 350', 'Meteor 350', 'Hunter 350'],
-  Bajaj: ['Pulsar', 'Avenger', 'Platina', 'CT100'],
-  'Hero MotoCorp': ['Splendor', 'Passion', 'Glamour', 'HF Deluxe'],
-  TVS: ['Apache', 'Raider', 'Sport', 'Jupiter', 'Ntorq'],
-  Yamaha: ['FZ', 'R15', 'MT-15', 'Fascino'],
-  Suzuki: ['Gixxer', 'Access', 'Burgman'],
-  KTM: ['Duke 200', 'Duke 390', 'RC 200'],
-  Kawasaki: ['Ninja 300', 'Ninja 650', 'Splendor'],
-  'Harley-Davidson': ['Street 750', 'Iron 883'],
-  Ather: ['450X', '450S'],
-  'Ola Electric': ['S1 Pro', 'S1 Air'],
-  Vespa: ['VXL', 'SXL'],
-  Aprilia: ['SR 160', 'SXR 160'],
-};
+// Vehicle type, category, make and model options used to be hardcoded here (VEHICLE_TYPES/
+// CATEGORY_MAP/MAKE_MAP/MODEL_MAP) — they're now admin-managed data in the single VehicleCatalog
+// document (see vehicleCatalogController.js), editable from the "Vehicle Catalog" tab.
 export const TRANSMISSIONS = ['Manual', 'Automatic'];
 export const FUEL_TYPES = ['Petrol', 'Diesel', 'CNG', 'Electric'];
 export const VEHICLE_STATUSES = ['Active', 'On Hold', 'Inactive'];
@@ -86,14 +44,34 @@ export const vehicleValidators = [
     .customSanitizer((value) => value.toUpperCase())
     .matches(VEHICLE_NO_RE)
     .withMessage('Enter a valid vehicle number (e.g. KA01AB1234)'),
-  body('vehicleType').trim().notEmpty().withMessage('Vehicle type is required').isIn(VEHICLE_TYPES).withMessage('Invalid vehicle type'),
+  body('vehicleType')
+    .trim()
+    .notEmpty()
+    .withMessage('Vehicle type is required')
+    .custom(async (value) => {
+      const match = await VehicleCatalog.findOne({
+        vehicleTypes: { $elemMatch: { name: value, isDeleted: false } },
+      });
+      if (!match) {
+        throw new Error('Invalid vehicle type');
+      }
+      return true;
+    }),
   body('vehicleCategory')
     .trim()
     .notEmpty()
     .withMessage('Vehicle category is required')
-    .custom((value, { req }) => {
-      const allowed = CATEGORY_MAP[req.body.vehicleType] || [];
-      if (!allowed.includes(value)) {
+    .custom(async (value, { req }) => {
+      const match = await VehicleCatalog.findOne({
+        vehicleTypes: {
+          $elemMatch: {
+            name: req.body.vehicleType,
+            isDeleted: false,
+            categories: { $elemMatch: { name: value, isDeleted: false } },
+          },
+        },
+      });
+      if (!match) {
         throw new Error('Vehicle category does not match the selected vehicle type');
       }
       return true;
@@ -102,9 +80,17 @@ export const vehicleValidators = [
     .trim()
     .notEmpty()
     .withMessage('Make is required')
-    .custom((value, { req }) => {
-      const allowed = MAKE_MAP[req.body.vehicleType] || [];
-      if (!allowed.includes(value)) {
+    .custom(async (value, { req }) => {
+      const match = await VehicleCatalog.findOne({
+        vehicleTypes: {
+          $elemMatch: {
+            name: req.body.vehicleType,
+            isDeleted: false,
+            makes: { $elemMatch: { name: value, isDeleted: false } },
+          },
+        },
+      });
+      if (!match) {
         throw new Error('Selected make does not match the selected vehicle type');
       }
       return true;
@@ -113,9 +99,23 @@ export const vehicleValidators = [
     .trim()
     .notEmpty()
     .withMessage('Model is required')
-    .custom((value, { req }) => {
-      const allowed = MODEL_MAP[req.body.make] || [];
-      if (!allowed.includes(value)) {
+    .custom(async (value, { req }) => {
+      const match = await VehicleCatalog.findOne({
+        vehicleTypes: {
+          $elemMatch: {
+            name: req.body.vehicleType,
+            isDeleted: false,
+            makes: {
+              $elemMatch: {
+                name: req.body.make,
+                isDeleted: false,
+                models: { $elemMatch: { name: value, isDeleted: false } },
+              },
+            },
+          },
+        },
+      });
+      if (!match) {
         throw new Error('Selected model does not match the selected make');
       }
       return true;

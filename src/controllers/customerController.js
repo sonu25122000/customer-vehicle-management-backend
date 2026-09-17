@@ -232,6 +232,22 @@ export const updateCustomer = asyncHandler(async (req, res) => {
     return res.status(409).json({ message: 'A customer with this mobile number already exists' });
   }
 
+  // Profile status can only move to Accepted once selfie, driving licence and Aadhaar are all
+  // on file — a trip still can't be started until this profile is Accepted either (see
+  // tripController.updateTrip's "On Trip" check).
+  if (profileVerified === 'Accepted') {
+    const existing = await Customer.findOne({ _id: req.params.id, isDeleted: false });
+    if (!existing) {
+      return res.status(404).json({ message: 'Customer not found' });
+    }
+    const docs = existing.documents || {};
+    if (!(docs.selfie && docs.drivingLicence && docs.aadhaar)) {
+      return res.status(400).json({
+        message: 'Upload the selfie, driving licence and Aadhaar before accepting this profile',
+      });
+    }
+  }
+
   const customer = await Customer.findOneAndUpdate(
     { _id: req.params.id, isDeleted: false },
     {

@@ -9,22 +9,18 @@ const vehicleSchema = new mongoose.Schema(
       uppercase: true,
       match: [/^[A-Z]{2}[0-9]{1,2}[A-Z]{1,2}[0-9]{4}$/, 'Enter a valid vehicle number (e.g. KA01AB1234)'],
     },
+    // vehicleType and vehicleCategory's valid options live in the single VehicleCatalog document
+    // and are enforced by vehicleController's async validators — not schema enums here, since
+    // the admin-managed catalog can grow over time (see vehicleCatalogController.js).
     vehicleType: {
       type: String,
       required: [true, 'Vehicle type is required'],
-      enum: ['Car', 'Bike', 'Scooty'],
+      trim: true,
     },
-    // Options depend on vehicleType — enforced by vehicleController's cross-field validator,
-    // not the schema enum (which only guards against garbage values here).
     vehicleCategory: {
       type: String,
       required: [true, 'Vehicle category is required'],
       trim: true,
-      enum: [
-        'Sedan', 'Hatchback', 'SUV', 'Compact',
-        'Sports', 'Cruiser', 'Commuter', 'Off-Road',
-        'Standard', 'Electric',
-      ],
     },
     transmission: {
       type: String,

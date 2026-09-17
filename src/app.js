@@ -11,6 +11,7 @@ import authRoutes from './routes/authRoutes.js';
 import customerRoutes from './routes/customerRoutes.js';
 import vehicleRoutes from './routes/vehicleRoutes.js';
 import tripRoutes from './routes/tripRoutes.js';
+import vehicleCatalogRoutes from './routes/vehicleCatalogRoutes.js';
 import { notFound, errorHandler } from './middleware/errorHandler.js';
 import Admin from './models/Admin.js';
 import Customer from './models/Customer.js';
@@ -67,6 +68,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/customers', customerRoutes);
 app.use('/api/vehicles', vehicleRoutes);
 app.use('/api/trips', tripRoutes);
+app.use('/api/vehicle-catalog', vehicleCatalogRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

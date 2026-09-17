@@ -19,7 +19,8 @@ const VEHICLE_POPULATE = 'vehicleNo vehicleType vehicleCategory make model owner
 // move to (including staying put).
 const ALLOWED_STATUS_TRANSITIONS = {
   'Yet to Start': ['Yet to Start', 'On Trip', 'Cancelled'],
-  'On Trip': ['On Trip', 'Completed', 'Cancelled'],
+  // Once a trip is under way it can no longer be cancelled — the only forward path is Completed.
+  'On Trip': ['On Trip', 'Completed'],
   Completed: ['Completed'],
   Cancelled: ['Cancelled'],
 };
@@ -349,14 +350,15 @@ export const updateTrip = asyncHandler(async (req, res) => {
   const lockError = await assertVehicleTripAvailable(next.vehicle, requestedStatus, req.params.id);
   if (lockError) return res.status(409).json({ message: lockError });
 
-  // A trip can't be started (moved to "On Trip") until the customer's KYC documents are on
-  // file — selfie, driving licence and Aadhaar. "Other" stays optional.
+  // A trip can't be started (moved to "On Trip") until the customer's profile has been
+  // verified as Accepted — which itself only happens once selfie, driving licence and Aadhaar
+  // are on file (see customerController.updateCustomer). A trip can still be *created* for an
+  // unverified customer; it just can't be started until their profile is Accepted.
   if (requestedStatus === 'On Trip' && existing.status !== 'On Trip') {
     const customerDoc = await Customer.findOne({ _id: next.customer, isDeleted: false });
-    const docs = customerDoc?.documents || {};
-    if (!(docs.selfie && docs.drivingLicence && docs.aadhaar)) {
+    if (customerDoc?.profileVerified !== 'Accepted') {
       return res.status(400).json({
-        message: "Upload the customer's selfie, driving licence and Aadhaar before starting this trip",
+        message: "This customer's profile must be Accepted (selfie, driving licence and Aadhaar uploaded) before starting this trip",
       });
     }
   }

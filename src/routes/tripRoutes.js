@@ -11,7 +11,7 @@ import {
   tripValidators,
   rescheduleValidators,
 } from '../controllers/tripController.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -75,7 +75,14 @@ router.get('/stats', getStats);
  *   post:
  *     tags: [Trips]
  *     summary: Create a trip/booking (moderator/admin)
- *     description: tripId is always server-generated (never accepted from the request body); new trips always start as "Yet to Start".
+ *     description: >
+ *       tripId is always server-generated (never accepted from the request body); new trips always
+ *       start as "Yet to Start". An optional `coupon` (ObjectId) can be supplied — it must be
+ *       applicable to the trip's customer (see GET /coupons/applicable), active, inside its
+ *       start/expiry window and under its maxUsage, otherwise the request is rejected (400, or 409 if
+ *       the last use was taken concurrently). On success one use is reserved atomically
+ *       (usageCount + 1), the discount is taken off `amount` (stored net) and recorded as
+ *       couponCode/couponDiscount. The coupon cannot be changed once the trip exists.
  *     requestBody:
  *       required: true
  *       content:
@@ -128,7 +135,7 @@ router.post('/', canEdit, tripValidators, createTrip);
  *       409: { description: The vehicle is already on another active trip, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  *   delete:
  *     tags: [Trips]
- *     summary: Soft-delete a trip (moderator/admin)
+ *     summary: Soft-delete a trip (admin only)
  *     parameters:
  *       - in: path
  *         name: id
@@ -143,7 +150,7 @@ router.post('/', canEdit, tripValidators, createTrip);
 router.get('/:id', getTrip);
 router.put('/:id', canEdit, tripValidators, updateTrip);
 router.patch('/:id', canEdit, tripValidators, updateTrip);
-router.delete('/:id', canEdit, deleteTrip);
+router.delete('/:id', canDelete, deleteTrip);
 
 /**
  * @swagger

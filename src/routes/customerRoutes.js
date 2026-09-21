@@ -12,7 +12,7 @@ import {
   statsValidators,
   customerValidators,
 } from '../controllers/customerController.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
 import { uploadCustomerDocuments as uploadCustomerDocumentsMiddleware, handleUploadErrors } from '../middleware/upload.js';
 
 const router = Router();
@@ -133,7 +133,7 @@ router.post('/', canEdit, customerValidators, createCustomer);
  *       404: { $ref: '#/components/responses/NotFound' }
  *   delete:
  *     tags: [Customers]
- *     summary: Soft-delete a customer (moderator/admin)
+ *     summary: Soft-delete a customer (admin only)
  *     parameters:
  *       - in: path
  *         name: id
@@ -148,7 +148,7 @@ router.post('/', canEdit, customerValidators, createCustomer);
 router.get('/:id', getCustomer);
 router.put('/:id', canEdit, customerValidators, updateCustomer);
 router.patch('/:id', canEdit, customerValidators, updateCustomer);
-router.delete('/:id', canEdit, deleteCustomer);
+router.delete('/:id', canDelete, deleteCustomer);
 
 /**
  * @swagger

@@ -7,11 +7,18 @@ import {
   listUsers,
   createUser,
   updateUserRole,
+  updateUser,
+  deleteUser,
+  updateUserStatus,
   updateMaxSessions,
   loginValidators,
   changePasswordValidators,
   createUserValidators,
   roleUpdateValidators,
+  updateUserValidators,
+  userIdValidators,
+  userStatusValidators,
+  listUsersValidators,
   maxSessionsValidators,
 } from '../controllers/authController.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
@@ -129,13 +136,23 @@ router.patch('/max-sessions', requireAuth, maxSessionsValidators, updateMaxSessi
  * /auth/users:
  *   get:
  *     tags: [Auth]
- *     summary: List all staff accounts (admin only)
+ *     summary: List staff accounts, filtered by Active / Inactive tab (admin only)
+ *     description: Moderators and viewers get 403 — the Users module is admin-only. Returns the accounts for the requested tab plus the counts for both tabs.
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, enum: [active, inactive], default: active }
+ *         description: 'active = enabled accounts (default), inactive = deactivated / soft-deleted accounts'
  *     responses:
  *       200:
- *         description: List of accounts
+ *         description: List of accounts for the tab, plus counts for both tabs
  *         content:
  *           application/json:
- *             schema: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Admin' } } } }
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 data: { type: array, items: { $ref: '#/components/schemas/Admin' } }
+ *                 counts: { type: object, properties: { active: { type: integer }, inactive: { type: integer } } }
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       403: { $ref: '#/components/responses/Forbidden' }
  *   post:
@@ -160,7 +177,7 @@ router.patch('/max-sessions', requireAuth, maxSessionsValidators, updateMaxSessi
  *       403: { $ref: '#/components/responses/Forbidden' }
  *       409: { description: Username already taken, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  */
-router.get('/users', requireAuth, requireRole('admin'), listUsers);
+router.get('/users', requireAuth, requireRole('admin'), listUsersValidators, listUsers);
 router.post('/users', requireAuth, requireRole('admin'), createUserValidators, createUser);
 
 /**
@@ -188,5 +205,85 @@ router.post('/users', requireAuth, requireRole('admin'), createUserValidators, c
  *       404: { $ref: '#/components/responses/NotFound' }
  */
 router.patch('/users/:id/role', requireAuth, requireRole('admin'), roleUpdateValidators, updateUserRole);
+
+/**
+ * @swagger
+ * /auth/users/{id}:
+ *   patch:
+ *     tags: [Auth]
+ *     summary: Edit an account — username, role and/or reset its password (admin only)
+ *     description: >
+ *       Every body field is optional. You can't change your own role, and the last active admin
+ *       can't be demoted. Resetting another account's password signs it out on every device.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               username: { type: string, minLength: 3, maxLength: 30 }
+ *               role: { type: string, enum: [viewer, moderator, admin] }
+ *               password: { type: string, format: password, minLength: 6, description: 'Leave out to keep the current password' }
+ *     responses:
+ *       200: { description: Account updated }
+ *       400: { $ref: '#/components/responses/ValidationError' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ *       409: { $ref: '#/components/responses/Conflict' }
+ *   delete:
+ *     tags: [Auth]
+ *     summary: Soft-delete (deactivate) an account (admin only)
+ *     description: >
+ *       The account is never removed from the database — it is marked inactive, signed out on
+ *       every device, blocked from logging in, and moves to the Inactive tab where it can be
+ *       reactivated. You can't deactivate yourself or the last active admin.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Account deactivated }
+ *       400: { $ref: '#/components/responses/ValidationError' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ */
+router.patch('/users/:id', requireAuth, requireRole('admin'), updateUserValidators, updateUser);
+router.put('/users/:id', requireAuth, requireRole('admin'), updateUserValidators, updateUser);
+router.delete('/users/:id', requireAuth, requireRole('admin'), userIdValidators, deleteUser);
+
+/**
+ * @swagger
+ * /auth/users/{id}/status:
+ *   patch:
+ *     tags: [Auth]
+ *     summary: Disable or re-enable an account (admin only)
+ *     description: '{ "isActive": false } deactivates (same as DELETE), { "isActive": true } reactivates an account from the Inactive tab.'
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { type: object, required: [isActive], properties: { isActive: { type: boolean } } }
+ *     responses:
+ *       200: { description: Status updated }
+ *       400: { $ref: '#/components/responses/ValidationError' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ */
+router.patch('/users/:id/status', requireAuth, requireRole('admin'), userStatusValidators, updateUserStatus);
 
 export default router;

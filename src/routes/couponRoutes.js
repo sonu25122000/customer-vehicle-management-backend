@@ -6,31 +6,64 @@ import {
   createCoupon,
   updateCoupon,
   deleteCoupon,
+  listApplicableCoupons,
   listValidators,
+  applicableValidators,
   couponValidators,
 } from '../controllers/couponController.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
 
 const router = Router();
 
-// Coupons & Offers is an admin-only module end to end — not just create/edit/delete, but
-// viewing too (the tab is hidden entirely for viewer/moderator on the frontend; this is the
-// backend enforcement of the same rule).
-router.use(requireAuth, requireRole('admin'));
+// Coupons & Offers is open to moderators and admins — viewing, creating and editing. Viewers get
+// no access at all (the tab is hidden for them on the frontend; this is the backend enforcement of
+// the same rule). Deleting a coupon is admin-only (canDelete on the DELETE route below).
+router.use(requireAuth, requireRole('moderator', 'admin'));
 
 /**
  * @swagger
  * tags:
  *   - name: Coupons
- *     description: Customer discount codes — admin only, end to end
+ *     description: >
+ *       Customer discount codes. Moderators and admins can view, create and edit them; deleting is
+ *       admin-only. Start/expiry must be on a 30-minute interval, expiry must be after start, and
+ *       every coupon has a maximum usage count that is enforced when it is applied to a trip.
  */
+
+/**
+ * @swagger
+ * /coupons/applicable:
+ *   get:
+ *     tags: [Coupons]
+ *     summary: Coupons the trip form can offer for a customer (moderator/admin)
+ *     description: >
+ *       Returns only coupons that are usable right now for this customer — active, inside their
+ *       start/expiry window, not used up (usageCount < maxUsage), and either applicable to all
+ *       customers or listing this customer. Used by the Create Trip form's Coupon dropdown.
+ *     parameters:
+ *       - in: query
+ *         name: customer
+ *         required: true
+ *         schema: { type: string }
+ *         description: Customer ObjectId
+ *     responses:
+ *       200:
+ *         description: Applicable coupons
+ *         content:
+ *           application/json:
+ *             schema: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Coupon' } } } }
+ *       400: { $ref: '#/components/responses/ValidationError' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+router.get('/applicable', applicableValidators, listApplicableCoupons);
 
 /**
  * @swagger
  * /coupons/stats:
  *   get:
  *     tags: [Coupons]
- *     summary: Coupon summary stats (total/active/expired) (admin only)
+ *     summary: Coupon summary stats (total/active/expired) (moderator/admin)
  *     responses:
  *       200: { description: Stats }
  *       401: { $ref: '#/components/responses/Unauthorized' }
@@ -43,7 +76,7 @@ router.get('/stats', getCouponStats);
  * /coupons:
  *   get:
  *     tags: [Coupons]
- *     summary: List coupons (paginated, searchable by code) (admin only)
+ *     summary: List coupons (paginated, searchable by code) (moderator/admin)
  *     parameters:
  *       - in: query
  *         name: search
@@ -64,7 +97,7 @@ router.get('/stats', getCouponStats);
  *       403: { $ref: '#/components/responses/Forbidden' }
  *   post:
  *     tags: [Coupons]
- *     summary: Create a coupon (admin only)
+ *     summary: Create a coupon (moderator/admin)
  *     requestBody:
  *       required: true
  *       content:
@@ -85,7 +118,7 @@ router.post('/', couponValidators, createCoupon);
  * /coupons/{id}:
  *   get:
  *     tags: [Coupons]
- *     summary: Get a coupon by id (admin only)
+ *     summary: Get a coupon by id (moderator/admin)
  *     parameters:
  *       - in: path
  *         name: id
@@ -98,7 +131,7 @@ router.post('/', couponValidators, createCoupon);
  *       404: { $ref: '#/components/responses/NotFound' }
  *   put:
  *     tags: [Coupons]
- *     summary: Update a coupon (admin only)
+ *     summary: Update a coupon (moderator/admin)
  *     parameters:
  *       - in: path
  *         name: id
@@ -118,7 +151,7 @@ router.post('/', couponValidators, createCoupon);
  *       409: { $ref: '#/components/responses/Conflict' }
  *   delete:
  *     tags: [Coupons]
- *     summary: Soft-delete a coupon (admin only)
+ *     summary: Soft-delete a coupon (admin only — moderators get 403)
  *     parameters:
  *       - in: path
  *         name: id
@@ -133,6 +166,6 @@ router.post('/', couponValidators, createCoupon);
 router.get('/:id', getCoupon);
 router.put('/:id', couponValidators, updateCoupon);
 router.patch('/:id', couponValidators, updateCoupon);
-router.delete('/:id', deleteCoupon);
+router.delete('/:id', canDelete, deleteCoupon);
 
 export default router;

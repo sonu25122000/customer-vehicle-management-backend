@@ -4,6 +4,15 @@ const decimalGetter = (v) => (v !== undefined && v !== null ? parseFloat(v.toStr
 
 const tripSchema = new mongoose.Schema(
   {
+    // Human-meaningful booking reference, e.g. RW0926AXYZ — RW (Roam Wheels) + booking month/year
+    // + a 4-character random code. Generated server-side in tripController.buildTripId, never
+    // accepted from the request body. Uniqueness is enforced by the index below; createTrip
+    // retries generation on the rare collision.
+    tripId: {
+      type: String,
+      required: true,
+      unique: true,
+    },
     customer: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Customer',

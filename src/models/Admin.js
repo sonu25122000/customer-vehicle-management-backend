@@ -21,6 +21,15 @@ const adminSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    // viewer: read-only. moderator: can create/edit/delete records. admin: everything moderator
+    // can do, plus managing Coupons & Offers and other accounts' roles. There is no public signup —
+    // every account is created by an admin (POST /api/auth/users) with the role they choose; roles
+    // can be changed later via PATCH /api/auth/users/:id/role.
+    role: {
+      type: String,
+      enum: ['viewer', 'moderator', 'admin'],
+      default: 'viewer',
+    },
     // Every login adds an entry here. A JWT is only valid while its embedded sessionId is
     // still present in this list — logging out removes it, and exceeding maxActiveSessions
     // evicts the oldest entries, signing those devices out.

@@ -120,6 +120,12 @@ export const vehicleValidators = [
       }
       return true;
     }),
+  body('year')
+    .notEmpty()
+    .withMessage('Year is required')
+    .isInt({ min: 1990, max: new Date().getFullYear() + 1 })
+    .withMessage(`Year must be between 1990 and ${new Date().getFullYear() + 1}`)
+    .toInt(),
   body('transmission')
     .trim()
     .notEmpty()
@@ -251,6 +257,7 @@ export const listVehicles = asyncHandler(async (req, res) => {
           status: 1,
           make: 1,
           model: 1,
+          year: 1,
           ownerName: 1,
           ownerMobile: 1,
           isDeleted: 1,
@@ -319,7 +326,7 @@ export const listVehicleOptions = asyncHandler(async (req, res) => {
 
   const vehicles = await Vehicle.find(
     filter,
-    'vehicleNo ownerName vehicleType vehicleCategory transmission fuel status make model'
+    'vehicleNo ownerName vehicleType vehicleCategory transmission fuel status make model year'
   )
     .sort({ vehicleNo: 1 })
     .limit(1000);
@@ -366,7 +373,7 @@ function hasAllPhotoSides(photos) {
 export const createVehicle = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, make, model, ownerName, ownerMobile } = req.body;
+  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, make, model, year, ownerName, ownerMobile } = req.body;
 
   const duplicate = await findDuplicate(vehicleNo);
   if (duplicate) {
@@ -383,6 +390,7 @@ export const createVehicle = asyncHandler(async (req, res) => {
     fuel,
     make,
     model,
+    year,
     ownerName,
     ownerMobile,
   });
@@ -393,7 +401,7 @@ export const createVehicle = asyncHandler(async (req, res) => {
 export const updateVehicle = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status, make, model, ownerName, ownerMobile } =
+  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status, make, model, year, ownerName, ownerMobile } =
     req.body;
 
   const duplicate = await findDuplicate(vehicleNo, req.params.id);
@@ -413,7 +421,7 @@ export const updateVehicle = asyncHandler(async (req, res) => {
     });
   }
 
-  vehicle.set({ vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status: nextStatus, make, model, ownerName, ownerMobile });
+  vehicle.set({ vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status: nextStatus, make, model, year, ownerName, ownerMobile });
   await vehicle.save();
 
   res.status(200).json({ data: vehicle, message: 'Vehicle updated successfully' });

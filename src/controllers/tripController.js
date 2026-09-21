@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { body, query, validationResult } from 'express-validator';
 import mongoose from 'mongoose';
 import Trip from '../models/Trip.js';
@@ -12,7 +13,33 @@ function escapeRegex(str) {
 const STATUSES = ['On Trip', 'Yet to Start', 'Completed', 'Cancelled'];
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const CUSTOMER_POPULATE = 'name mobile1 mobile2 customerType';
-const VEHICLE_POPULATE = 'vehicleNo vehicleType vehicleCategory make model ownerName';
+const VEHICLE_POPULATE = 'vehicleNo vehicleType vehicleCategory make model year ownerName';
+
+// No 0/O/1/I — avoids characters that are easy to misread/mistype when a customer reads a
+// trip ID back over the phone.
+const TRIP_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+// RW (Roam Wheels) + booking month + booking year (2 digits) + a 4-character random code,
+// e.g. RW0926AXYZ. Meaningful (company + when it was booked) while still short enough to read
+// out loud, and the random suffix keeps it non-guessable/non-sequential.
+export function buildTripId() {
+  const now = new Date();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const yy = String(now.getFullYear()).slice(-2);
+  const suffix = Array.from({ length: 4 }, () => TRIP_CODE_CHARS[crypto.randomInt(TRIP_CODE_CHARS.length)]).join('');
+  return `RW${mm}${yy}${suffix}`;
+}
+
+// The unique index is the real dedup guarantee — this loop (plus the E11000 catch at the call
+// site) just avoids relying on luck alone across many bookings in the same month.
+async function generateUniqueTripId() {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = buildTripId();
+    // eslint-disable-next-line no-await-in-loop
+    const clash = await Trip.exists({ tripId: candidate });
+    if (!clash) return candidate;
+  }
+  throw new Error('Could not generate a unique trip ID, please try again');
+}
 
 // A trip's status only ever moves forward along one of these paths — Completed and Cancelled
 // are terminal. Keying by CURRENT status gives the set of statuses a request is allowed to
@@ -152,6 +179,7 @@ async function buildFilter({ search, status, minRating, startDate, endDate, vehi
       Vehicle.find({ vehicleNo: regex }, '_id'),
     ]);
     filter.$or = [
+      { tripId: regex },
       { customer: { $in: matchingCustomers.map((c) => c._id) } },
       { vehicle: { $in: matchingVehicles.map((v) => v._id) } },
     ];
@@ -245,7 +273,7 @@ export const createTrip = asyncHandler(async (req, res) => {
     amount, tollCharges, advance, securityDeposit, startOdometer, endOdometer,
   } = req.body;
 
-  const trip = await Trip.create({
+  const baseDoc = {
     customer,
     vehicle,
     startDate,
@@ -261,7 +289,24 @@ export const createTrip = asyncHandler(async (req, res) => {
     status: 'Yet to Start',
     // rating only ever applies to a Completed trip — never accepted at creation time.
     // bookedDate is intentionally never taken from req.body — always "now" at creation.
-  });
+  };
+
+  // The pre-checked tripId from generateUniqueTripId is the common case; the retry here only
+  // matters if another request generates and inserts the very same code in between our check
+  // and our insert (E11000 on the unique index), which is astronomically unlikely but cheap to
+  // handle correctly.
+  let trip;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const tripId = await generateUniqueTripId();
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      trip = await Trip.create({ ...baseDoc, tripId });
+      break;
+    } catch (err) {
+      if (err?.code === 11000 && err?.keyPattern?.tripId && attempt < 2) continue;
+      throw err;
+    }
+  }
   await trip.populate([{ path: 'customer', select: CUSTOMER_POPULATE }, { path: 'vehicle', select: VEHICLE_POPULATE }]);
 
   res.status(201).json({ data: trip, message: 'Trip created successfully' });

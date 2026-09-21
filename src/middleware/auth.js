@@ -16,7 +16,7 @@ export const requireAuth = asyncHandler(async (req, res, next) => {
     return res.status(401).json({ message: 'Invalid or expired session' });
   }
 
-  const admin = await Admin.findById(payload.id).select('username activeSessions maxActiveSessions');
+  const admin = await Admin.findById(payload.id).select('username role activeSessions maxActiveSessions');
   if (!admin) {
     return res.status(401).json({ message: 'Invalid or expired session' });
   }
@@ -41,6 +41,17 @@ export const requireAuth = asyncHandler(async (req, res, next) => {
       .json({ message: 'You have been signed out. This device is no longer an active session for this account.' });
   }
 
-  req.admin = { id: admin._id, username: admin.username, sessionId: payload.sessionId };
+  // Role is read fresh from the DB above (never from the JWT payload) so a promotion/demotion
+  // takes effect on this account's very next request instead of waiting for the token to expire.
+  req.admin = { id: admin._id, username: admin.username, role: admin.role, sessionId: payload.sessionId };
   next();
 });
+
+// The single place role-based authorization happens — every mutating/admin-only route composes
+// this after requireAuth rather than re-implementing a role check inline in its controller.
+export const requireRole = (...roles) => (req, res, next) => {
+  if (!roles.includes(req.admin?.role)) {
+    return res.status(403).json({ message: 'You do not have permission to perform this action' });
+  }
+  next();
+};

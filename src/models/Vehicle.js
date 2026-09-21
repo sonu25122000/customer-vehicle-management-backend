@@ -49,6 +49,14 @@ const vehicleSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    // Model year, e.g. a 2026 Baleno — shown alongside make/model everywhere the vehicle is
+    // displayed. Upper bound is enforced in vehicleValidators (computed at request time so it
+    // doesn't go stale across a year boundary); only a sane floor lives on the schema itself.
+    year: {
+      type: Number,
+      required: [true, 'Year is required'],
+      min: [1990, 'Year must be 1990 or later'],
+    },
     ownerName: {
       type: String,
       required: [true, 'Owner/Host name is required'],

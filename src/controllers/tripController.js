@@ -136,12 +136,15 @@ function checkBusinessRules(body) {
     return 'End date and end time are required to mark a trip as Completed';
   }
   if (body.startDate && body.endDate) {
-    // Both are plain 'YYYY-MM-DD'/'HH:mm' strings (never .toDate()'d by the validators),
-    // so lexicographic comparison is equivalent to chronological comparison here.
-    if (body.endDate < body.startDate) {
+    // Both are 'YYYY-MM-DD'/'HH:mm' strings (never .toDate()'d by the validators); any time part
+    // on a date is dropped so lexicographic comparison is equivalent to chronological comparison,
+    // and so "same day" is judged on the calendar date alone.
+    const startDay = String(body.startDate).slice(0, 10);
+    const endDay = String(body.endDate).slice(0, 10);
+    if (endDay < startDay) {
       return 'End date cannot be before start date';
     }
-    if (body.endDate === body.startDate && body.startTime && body.endTime && body.endTime < body.startTime) {
+    if (endDay === startDay && body.startTime && body.endTime && body.endTime < body.startTime) {
       return 'End time cannot be before start time on the same day';
     }
   }
@@ -415,6 +418,29 @@ export const updateTrip = asyncHandler(async (req, res) => {
     next[field] = editableFields.includes(field) && field in req.body ? req.body[field] : existing[field];
   }
 
+  // A coupon can be added while editing (once — a coupon already on the trip can't be swapped
+  // or removed). Eligibility is checked now for a clear error message and again atomically when the
+  // usage is reserved below. The amount being saved is treated as the amount BEFORE the discount,
+  // and is stored net of it, exactly like at creation.
+  let couponDoc = null;
+  let couponDiscount = 0;
+  if (req.body.coupon) {
+    if (existing.coupon) {
+      if (String(existing.coupon) !== String(req.body.coupon)) {
+        return res.status(400).json({ message: 'A coupon has already been applied to this trip and cannot be changed' });
+      }
+    } else {
+      couponDoc = await Coupon.findOne(applicableCouponFilter(existing.customer, new Date(), req.body.coupon));
+      if (!couponDoc) {
+        return res.status(400).json({
+          message: 'This coupon cannot be applied — it is inactive, expired, not valid for this customer, or has reached its usage limit',
+        });
+      }
+      couponDiscount = calculateDiscount(couponDoc, next.amount);
+    }
+  }
+  const netAmount = couponDoc ? Math.max((Number(next.amount) || 0) - couponDiscount, 0) : next.amount;
+
   const businessError = checkBusinessRules({
     status: requestedStatus,
     startDate: next.startDate?.toISOString?.().slice(0, 10) || next.startDate,
@@ -424,7 +450,7 @@ export const updateTrip = asyncHandler(async (req, res) => {
     startOdometer: next.startOdometer,
     endOdometer: next.endOdometer,
     advance: next.advance,
-    amount: next.amount,
+    amount: netAmount,
   });
   if (businessError) return res.status(400).json({ message: businessError });
 
@@ -475,7 +501,7 @@ export const updateTrip = asyncHandler(async (req, res) => {
   existing.startTime = next.startTime;
   existing.endDate = next.endDate || undefined;
   existing.endTime = next.endTime || '';
-  existing.amount = next.amount ?? existing.amount ?? 0;
+  existing.amount = netAmount ?? existing.amount ?? 0;
   existing.tollCharges = next.tollCharges ?? existing.tollCharges ?? 0;
   existing.advance = next.advance ?? existing.advance ?? 0;
   existing.securityDeposit = next.securityDeposit ?? existing.securityDeposit ?? 0;
@@ -483,7 +509,27 @@ export const updateTrip = asyncHandler(async (req, res) => {
   existing.endOdometer = next.endOdometer === '' ? undefined : next.endOdometer;
   existing.status = requestedStatus;
 
-  await existing.save();
+  let couponReserved = false;
+  if (couponDoc) {
+    const reserved = await Coupon.findOneAndUpdate(
+      applicableCouponFilter(existing.customer, new Date(), couponDoc._id),
+      { $inc: { usageCount: 1 } }
+    );
+    if (!reserved) {
+      return res.status(409).json({ message: 'This coupon has just reached its usage limit or is no longer valid' });
+    }
+    couponReserved = true;
+    existing.coupon = couponDoc._id;
+    existing.couponCode = couponDoc.code;
+    existing.couponDiscount = couponDiscount;
+  }
+
+  try {
+    await existing.save();
+  } catch (err) {
+    if (couponReserved) await Coupon.updateOne({ _id: couponDoc._id }, { $inc: { usageCount: -1 } });
+    throw err;
+  }
   await existing.populate([{ path: 'customer', select: CUSTOMER_POPULATE }, { path: 'vehicle', select: VEHICLE_POPULATE }]);
 
   res.status(200).json({ data: existing, message: 'Trip updated successfully' });
@@ -503,6 +549,18 @@ export const rescheduleTrip = asyncHandler(async (req, res) => {
   }
 
   const { startDate, startTime } = req.body;
+
+  // The new start can't land after the trip's end date/time.
+  if (trip.endDate) {
+    const endDay = trip.endDate.toISOString().slice(0, 10);
+    const startDay = String(startDate).slice(0, 10);
+    if (startDay > endDay) {
+      return res.status(400).json({ message: 'New start date cannot be after the trip end date' });
+    }
+    if (startDay === endDay && trip.endTime && startTime > trip.endTime) {
+      return res.status(400).json({ message: 'New start time cannot be after the trip end time on the same day' });
+    }
+  }
 
   trip.rescheduleHistory.push({
     fromStartDate: trip.startDate,

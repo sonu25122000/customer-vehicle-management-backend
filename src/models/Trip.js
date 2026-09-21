@@ -70,6 +70,23 @@ const tripSchema = new mongoose.Schema(
       default: 0,
       get: decimalGetter,
     },
+    // Coupon redeemed at booking time (optional). couponCode/couponDiscount are snapshots so the
+    // trip keeps showing what was applied even if the coupon is later edited or deleted. `amount`
+    // above is already the NET payable amount after couponDiscount was taken off — set once in
+    // tripController.createTrip, never accepted from the request body.
+    coupon: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Coupon',
+    },
+    couponCode: {
+      type: String,
+      trim: true,
+    },
+    couponDiscount: {
+      type: mongoose.Schema.Types.Decimal128,
+      default: 0,
+      get: decimalGetter,
+    },
     startOdometer: {
       type: Number,
       min: 0,

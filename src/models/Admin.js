@@ -30,6 +30,16 @@ const adminSchema = new mongoose.Schema(
       enum: ['viewer', 'moderator', 'admin'],
       default: 'viewer',
     },
+    // Soft delete / disable flag. An inactive account can't log in and any live session is
+    // rejected by requireAuth, but the record (and its username) is kept so it can be
+    // reactivated later. Backfilled to true for accounts that predate this field (see app.js).
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+    deactivatedAt: {
+      type: Date,
+    },
     // Every login adds an entry here. A JWT is only valid while its embedded sessionId is
     // still present in this list — logging out removes it, and exceeding maxActiveSessions
     // evicts the oldest entries, signing those devices out.

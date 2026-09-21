@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { body, param, validationResult } from 'express-validator';
+import { body, param, query, validationResult } from 'express-validator';
 import Admin from '../models/Admin.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
@@ -37,6 +37,32 @@ export const changePasswordValidators = [
 export const roleUpdateValidators = [
   param('id').isMongoId().withMessage('Invalid account'),
   body('role').isIn(['viewer', 'moderator', 'admin']).withMessage('Invalid role'),
+];
+
+// PATCH /api/auth/users/:id — admin only. Every field is optional so the same endpoint edits
+// just a username, just a role, or resets a password.
+export const updateUserValidators = [
+  param('id').isMongoId().withMessage('Invalid account'),
+  body('username')
+    .optional()
+    .trim()
+    .isLength({ min: 3, max: 30 })
+    .withMessage('Username must be 3-30 characters')
+    .matches(/^[a-zA-Z0-9_.]+$/)
+    .withMessage('Username can only contain letters, numbers, dots and underscores'),
+  body('role').optional().isIn(['viewer', 'moderator', 'admin']).withMessage('Invalid role'),
+  body('password').optional({ checkFalsy: true }).isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+];
+
+export const userIdValidators = [param('id').isMongoId().withMessage('Invalid account')];
+
+export const userStatusValidators = [
+  param('id').isMongoId().withMessage('Invalid account'),
+  body('isActive').isBoolean().withMessage('isActive must be true or false').toBoolean(),
+];
+
+export const listUsersValidators = [
+  query('status').optional({ checkFalsy: true }).isIn(['active', 'inactive']).withMessage('Invalid status filter'),
 ];
 
 export const maxSessionsValidators = [
@@ -104,6 +130,10 @@ export const login = asyncHandler(async (req, res) => {
   const isMatch = await bcrypt.compare(password, admin.passwordHash);
   if (!isMatch) {
     return res.status(401).json({ message: 'Invalid username or password' });
+  }
+
+  if (admin.isActive === false) {
+    return res.status(403).json({ message: 'This account has been deactivated. Contact an administrator.' });
   }
 
   const responseAdmin = await issueSession(admin, Boolean(remember), res);
@@ -190,10 +220,46 @@ export const changePassword = asyncHandler(async (req, res) => {
   res.status(200).json({ message: 'Password changed successfully. Other devices have been signed out.' });
 });
 
-// GET /api/auth/users — admin only. Backing list for the Users management page.
-export const listUsers = asyncHandler(async (_req, res) => {
-  const users = await Admin.find().select('username role createdAt').sort({ createdAt: 1 });
-  res.status(200).json({ data: users });
+// "Active" includes accounts that predate the isActive field (missing => active).
+const ACTIVE_FILTER = { isActive: { $ne: false } };
+const INACTIVE_FILTER = { isActive: false };
+
+function publicUser(u) {
+  return {
+    _id: u._id,
+    username: u.username,
+    role: u.role,
+    isActive: u.isActive !== false,
+    createdAt: u.createdAt,
+    deactivatedAt: u.deactivatedAt,
+  };
+}
+
+// True when demoting/deactivating `target` would leave no active admin — guards against locking
+// everyone out of admin-only features.
+async function isLastActiveAdmin(target) {
+  if (target.role !== 'admin' || target.isActive === false) return false;
+  const others = await Admin.countDocuments({ _id: { $ne: target._id }, role: 'admin', ...ACTIVE_FILTER });
+  return others === 0;
+}
+
+// GET /api/auth/users?status=active|inactive — admin only. Backing list for the Users page tabs
+// (defaults to active); counts for both tabs are returned so the tab badges stay accurate.
+export const listUsers = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ message: errors.array()[0].msg });
+  }
+
+  const status = req.query.status === 'inactive' ? 'inactive' : 'active';
+  const [users, active, inactive] = await Promise.all([
+    Admin.find(status === 'inactive' ? INACTIVE_FILTER : ACTIVE_FILTER)
+      .select('username role isActive createdAt deactivatedAt')
+      .sort({ createdAt: 1 }),
+    Admin.countDocuments(ACTIVE_FILTER),
+    Admin.countDocuments(INACTIVE_FILTER),
+  ]);
+  res.status(200).json({ data: users.map(publicUser), counts: { active, inactive } });
 });
 
 // PATCH /api/auth/users/:id/role — admin only. Changes an existing account's role.
@@ -207,13 +273,12 @@ export const updateUserRole = asyncHandler(async (req, res) => {
   if (!target) {
     return res.status(404).json({ message: 'Account not found' });
   }
+  if (String(target._id) === String(req.admin.id)) {
+    return res.status(400).json({ message: "You can't change your own role" });
+  }
 
-  // Guard against locking everyone out of admin-only features by demoting the last admin.
-  if (target.role === 'admin' && req.body.role !== 'admin') {
-    const otherAdmins = await Admin.countDocuments({ _id: { $ne: target._id }, role: 'admin' });
-    if (otherAdmins === 0) {
-      return res.status(400).json({ message: 'Cannot change role: at least one admin account must remain' });
-    }
+  if (req.body.role !== 'admin' && (await isLastActiveAdmin(target))) {
+    return res.status(400).json({ message: 'Cannot change role: at least one admin account must remain' });
   }
 
   target.role = req.body.role;
@@ -223,6 +288,97 @@ export const updateUserRole = asyncHandler(async (req, res) => {
     data: { id: target._id, username: target.username, role: target.role },
     message: 'Role updated successfully',
   });
+});
+
+// PATCH /api/auth/users/:id — admin only. Edits username / role and can reset the password.
+// A password reset for another account signs it out everywhere so it takes effect at once.
+export const updateUser = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ message: errors.array()[0].msg });
+  }
+
+  const target = await Admin.findById(req.params.id);
+  if (!target) {
+    return res.status(404).json({ message: 'Account not found' });
+  }
+
+  const isSelf = String(target._id) === String(req.admin.id);
+  const { username, role, password } = req.body;
+
+  if (username !== undefined) {
+    const normalized = username.toLowerCase().trim();
+    if (normalized !== target.username) {
+      const clash = await Admin.findOne({ username: normalized, _id: { $ne: target._id } });
+      if (clash) return res.status(409).json({ message: 'This username is already taken' });
+      target.username = normalized;
+    }
+  }
+
+  if (role !== undefined && role !== target.role) {
+    if (isSelf) return res.status(400).json({ message: "You can't change your own role" });
+    if (role !== 'admin' && (await isLastActiveAdmin(target))) {
+      return res.status(400).json({ message: 'Cannot change role: at least one admin account must remain' });
+    }
+    target.role = role;
+  }
+
+  if (password) {
+    target.passwordHash = await bcrypt.hash(password, 10);
+    if (!isSelf) target.activeSessions = [];
+  }
+
+  await target.save();
+  res.status(200).json({ data: publicUser(target), message: 'Account updated successfully' });
+});
+
+// Shared by DELETE /users/:id (soft delete) and PATCH /users/:id/status (disable / re-enable).
+async function setUserActive(req, res, isActive) {
+  const target = await Admin.findById(req.params.id);
+  if (!target) {
+    return res.status(404).json({ message: 'Account not found' });
+  }
+
+  if (!isActive) {
+    if (String(target._id) === String(req.admin.id)) {
+      return res.status(400).json({ message: "You can't deactivate your own account" });
+    }
+    if (await isLastActiveAdmin(target)) {
+      return res.status(400).json({ message: 'Cannot deactivate: at least one active admin account must remain' });
+    }
+    target.isActive = false;
+    target.deactivatedAt = new Date();
+    target.activeSessions = []; // sign them out on every device straight away
+  } else {
+    target.isActive = true;
+    target.deactivatedAt = undefined;
+  }
+
+  await target.save();
+  res.status(200).json({
+    data: publicUser(target),
+    message: isActive ? 'Account reactivated successfully' : 'Account deactivated successfully',
+  });
+}
+
+// DELETE /api/auth/users/:id — admin only. Soft delete: the account is deactivated (moves to the
+// Inactive tab), never removed from the database, and can be reactivated later.
+export const deleteUser = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ message: errors.array()[0].msg });
+  }
+  return setUserActive(req, res, false);
+});
+
+// PATCH /api/auth/users/:id/status — admin only. { isActive: false } disables, { isActive: true }
+// reactivates.
+export const updateUserStatus = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ message: errors.array()[0].msg });
+  }
+  return setUserActive(req, res, req.body.isActive);
 });
 
 // PATCH /api/auth/max-sessions — lets the signed-in admin set their own device limit.

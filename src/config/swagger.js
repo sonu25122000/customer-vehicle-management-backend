@@ -1,3 +1,5 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
 import swaggerJSDoc from 'swagger-jsdoc';
 
 // Shared request/response shapes referenced (via $ref) from the @swagger JSDoc blocks on every
@@ -12,6 +14,10 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', example: '652f1a2b3c4d5e6f7a8b9c0d' },
+      _id: { type: 'string', description: 'Present on /auth/users responses (same value as id elsewhere)' },
+      isActive: { type: 'boolean', description: 'false = deactivated (soft-deleted) — cannot log in; shown on the Users page Inactive tab' },
+      deactivatedAt: { type: 'string', format: 'date-time' },
+      createdAt: { type: 'string', format: 'date-time' },
       username: { type: 'string', example: 'jane' },
       role: { type: 'string', enum: ['viewer', 'moderator', 'admin'], example: 'viewer' },
       maxActiveSessions: { type: 'integer', example: 1 },
@@ -65,6 +71,9 @@ const schemas = {
       advance: { type: 'number' },
       securityDeposit: { type: 'number' },
       refundAmount: { type: 'number' },
+      coupon: { type: 'string', description: 'Optional coupon ObjectId, accepted on create only. Must be applicable to the trip customer (see GET /coupons/applicable) and under its usage limit.' },
+      couponCode: { type: 'string', readOnly: true, description: 'Snapshot of the applied coupon code' },
+      couponDiscount: { type: 'number', readOnly: true, description: 'Rupees taken off by the coupon. amount is stored net of this.' },
       startOdometer: { type: 'number' },
       endOdometer: { type: 'number' },
       status: { type: 'string', enum: ['On Trip', 'Yet to Start', 'Completed', 'Cancelled'] },
@@ -80,8 +89,10 @@ const schemas = {
       value: { type: 'number', example: 20 },
       applicability: { type: 'string', enum: ['all', 'selected'] },
       customers: { type: 'array', items: { type: 'string' }, description: 'Customer ObjectIds; only used when applicability is "selected"' },
-      startAt: { type: 'string', format: 'date-time' },
-      expiresAt: { type: 'string', format: 'date-time' },
+      startAt: { type: 'string', format: 'date-time', description: 'Must be on a 30-minute boundary (:00 or :30)' },
+      expiresAt: { type: 'string', format: 'date-time', description: 'Must be on a 30-minute boundary and after startAt; a new/changed expiry must be in the future' },
+      maxUsage: { type: 'integer', minimum: 1, description: 'Maximum number of times the coupon can be used. Cannot be lowered below usageCount.' },
+      usageCount: { type: 'integer', readOnly: true, description: 'Times used so far — maintained by the server when a trip redeems the coupon' },
       isActive: { type: 'boolean' },
     },
   },
@@ -130,7 +141,11 @@ const swaggerDefinition = {
       'signup — every account is created by an admin via POST /auth/users. Every route except ' +
       '`/auth/login` requires the `token` session cookie set by that endpoint. Endpoints marked ' +
       '"moderator/admin" or "admin" additionally require that role — ' +
-      'see the `requireRole` middleware in `src/middleware/auth.js`.',
+      'see the `requireRole` middleware in `src/middleware/auth.js`.\n\n' +
+      '**Roles:** viewer = read-only. moderator = everything except (1) deleting anything — every ' +
+      'DELETE endpoint (customers, vehicles, vehicle photos, trips, vehicle-catalog remove, coupons) ' +
+      'is admin-only — and (2) the Users module (/auth/users*), which is admin-only. Moderators can ' +
+      'view, create and edit coupons. admin = everything.',
   },
   servers: [{ url: (process.env.PUBLIC_API_URL || `http://localhost:${process.env.PORT || 5000}`) + '/api' }],
   components: {
@@ -150,5 +165,8 @@ const swaggerDefinition = {
 
 export const swaggerSpec = swaggerJSDoc({
   definition: swaggerDefinition,
-  apis: ['./src/routes/*.js'],
+  // Absolute (relative to this file, not the process cwd) so it resolves the same locally and
+  // inside a serverless function whose cwd isn't the project root.
+  // Forward slashes because swagger-jsdoc globs this, and glob patterns don't accept Windows backslashes.
+  apis: [path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../routes/*.js').replace(/\\/g, '/')],
 });

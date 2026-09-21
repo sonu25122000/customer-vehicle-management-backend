@@ -16,9 +16,15 @@ export const requireAuth = asyncHandler(async (req, res, next) => {
     return res.status(401).json({ message: 'Invalid or expired session' });
   }
 
-  const admin = await Admin.findById(payload.id).select('username role activeSessions maxActiveSessions');
+  const admin = await Admin.findById(payload.id).select('username role isActive activeSessions maxActiveSessions');
   if (!admin) {
     return res.status(401).json({ message: 'Invalid or expired session' });
+  }
+
+  // A deactivated (soft-deleted) account is locked out immediately, even if its JWT is still
+  // valid — checked on every request rather than relying on session eviction alone.
+  if (admin.isActive === false) {
+    return res.status(401).json({ message: 'This account has been deactivated' });
   }
 
   // Self-heals drift between activeSessions and maxActiveSessions — e.g. the limit was
@@ -55,3 +61,7 @@ export const requireRole = (...roles) => (req, res, next) => {
   }
   next();
 };
+
+// Deleting anything (customers, vehicles, vehicle photos, trips, catalog entries, coupons) is
+// admin-only — moderators can create/edit but never delete. Every delete route composes this.
+export const canDelete = requireRole('admin');

@@ -4,7 +4,9 @@ import mongoose from 'mongoose';
 import Trip from '../models/Trip.js';
 import Customer from '../models/Customer.js';
 import Vehicle from '../models/Vehicle.js';
+import Coupon from '../models/Coupon.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { applicableCouponFilter, calculateDiscount } from '../utils/couponRules.js';
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -103,6 +105,8 @@ export const tripValidators = [
   body('refundAmount').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('Refund amount must be a positive number'),
   body('startOdometer').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('Starting odometer must be a positive number'),
   body('endOdometer').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('Ending odometer must be a positive number'),
+  // Optional; only honoured when creating a trip (see createTrip) — ignored on update.
+  body('coupon').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid coupon selected'),
   body('status').trim().notEmpty().withMessage('Trip status is required').isIn(STATUSES).withMessage('Invalid trip status'),
   body('rating').optional({ checkFalsy: true }).isInt({ min: 1, max: 5 }).withMessage('Rating must be between 1 and 5'),
 ];
@@ -260,11 +264,28 @@ async function assertRefsActive(customerId, vehicleId) {
 export const createTrip = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const businessError = checkBusinessRules(req.body);
-  if (businessError) return res.status(400).json({ message: businessError });
-
   const refError = await assertRefsActive(req.body.customer, req.body.vehicle);
   if (refError) return res.status(400).json({ message: refError });
+
+  // Optional coupon. Eligibility is checked here so the client gets a clear message, and again
+  // atomically when the usage is actually reserved below (two bookings racing for the last use).
+  let couponDoc = null;
+  let couponDiscount = 0;
+  if (req.body.coupon) {
+    couponDoc = await Coupon.findOne(applicableCouponFilter(req.body.customer, new Date(), req.body.coupon));
+    if (!couponDoc) {
+      return res.status(400).json({
+        message: 'This coupon cannot be applied — it is inactive, expired, not valid for this customer, or has reached its usage limit',
+      });
+    }
+    couponDiscount = calculateDiscount(couponDoc, req.body.amount);
+  }
+  // `amount` is stored net of the coupon discount, so balance due (amount - advance) stays correct
+  // everywhere it's already computed.
+  const netAmount = Math.max((Number(req.body.amount) || 0) - couponDiscount, 0);
+
+  const businessError = checkBusinessRules({ ...req.body, amount: netAmount });
+  if (businessError) return res.status(400).json({ message: businessError });
 
   // New trips always start life as "Yet to Start" — never accept an initial status from the
   // client, so there's no way to create a trip that's already On Trip/Completed/Cancelled.
@@ -280,13 +301,14 @@ export const createTrip = asyncHandler(async (req, res) => {
     startTime,
     endDate,
     endTime: endTime || '',
-    amount: amount || 0,
+    amount: netAmount,
     tollCharges: tollCharges || 0,
     advance: advance || 0,
     securityDeposit: securityDeposit || 0,
     startOdometer: startOdometer === '' ? undefined : startOdometer,
     endOdometer: endOdometer === '' ? undefined : endOdometer,
     status: 'Yet to Start',
+    ...(couponDoc ? { coupon: couponDoc._id, couponCode: couponDoc.code, couponDiscount } : {}),
     // rating only ever applies to a Completed trip — never accepted at creation time.
     // bookedDate is intentionally never taken from req.body — always "now" at creation.
   };
@@ -295,17 +317,36 @@ export const createTrip = asyncHandler(async (req, res) => {
   // matters if another request generates and inserts the very same code in between our check
   // and our insert (E11000 on the unique index), which is astronomically unlikely but cheap to
   // handle correctly.
-  let trip;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const tripId = await generateUniqueTripId();
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      trip = await Trip.create({ ...baseDoc, tripId });
-      break;
-    } catch (err) {
-      if (err?.code === 11000 && err?.keyPattern?.tripId && attempt < 2) continue;
-      throw err;
+  // Reserve one use of the coupon first — a single atomic update that only succeeds while the
+  // coupon is still live and under its maxUsage — and hand it back if the trip can't be created.
+  let couponReserved = false;
+  if (couponDoc) {
+    const reserved = await Coupon.findOneAndUpdate(
+      applicableCouponFilter(customer, new Date(), couponDoc._id),
+      { $inc: { usageCount: 1 } }
+    );
+    if (!reserved) {
+      return res.status(409).json({ message: 'This coupon has just reached its usage limit or is no longer valid' });
     }
+    couponReserved = true;
+  }
+
+  let trip;
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const tripId = await generateUniqueTripId();
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        trip = await Trip.create({ ...baseDoc, tripId });
+        break;
+      } catch (err) {
+        if (err?.code === 11000 && err?.keyPattern?.tripId && attempt < 2) continue;
+        throw err;
+      }
+    }
+  } catch (err) {
+    if (couponReserved) await Coupon.updateOne({ _id: couponDoc._id }, { $inc: { usageCount: -1 } });
+    throw err;
   }
   await trip.populate([{ path: 'customer', select: CUSTOMER_POPULATE }, { path: 'vehicle', select: VEHICLE_POPULATE }]);
 

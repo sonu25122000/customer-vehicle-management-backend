@@ -5,7 +5,7 @@ import {
   removeCatalogItem,
   catalogItemValidators,
 } from '../controllers/vehicleCatalogController.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -82,7 +82,7 @@ router.post('/', canEdit, catalogItemValidators, addCatalogItem);
  * /vehicle-catalog/remove:
  *   post:
  *     tags: [Vehicle Catalog]
- *     summary: Soft-delete a vehicle type, category, make or model (moderator/admin)
+ *     summary: Soft-delete a vehicle type, category, make or model (admin only)
  *     requestBody:
  *       required: true
  *       content:
@@ -101,6 +101,6 @@ router.post('/', canEdit, catalogItemValidators, addCatalogItem);
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       403: { $ref: '#/components/responses/Forbidden' }
  */
-router.post('/remove', canEdit, catalogItemValidators, removeCatalogItem);
+router.post('/remove', canDelete, catalogItemValidators, removeCatalogItem);
 
 export default router;

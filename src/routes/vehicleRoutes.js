@@ -13,7 +13,7 @@ import {
   listValidators,
   vehicleValidators,
 } from '../controllers/vehicleController.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
 import { uploadVehiclePhotos, uploadVehicleDocuments, handleUploadErrors } from '../middleware/upload.js';
 
 const router = Router();
@@ -142,7 +142,7 @@ router.post('/', canEdit, vehicleValidators, createVehicle);
  *       409: { $ref: '#/components/responses/Conflict' }
  *   delete:
  *     tags: [Vehicles]
- *     summary: Soft-delete a vehicle (moderator/admin)
+ *     summary: Soft-delete a vehicle (admin only)
  *     parameters:
  *       - in: path
  *         name: id
@@ -157,7 +157,7 @@ router.post('/', canEdit, vehicleValidators, createVehicle);
 router.get('/:id', getVehicle);
 router.put('/:id', canEdit, vehicleValidators, updateVehicle);
 router.patch('/:id', canEdit, vehicleValidators, updateVehicle);
-router.delete('/:id', canEdit, deleteVehicle);
+router.delete('/:id', canDelete, deleteVehicle);
 
 /**
  * @swagger
@@ -195,7 +195,7 @@ router.post('/:id/photos', canEdit, uploadVehiclePhotos, handleUploadErrors, upl
  * /vehicles/{id}/photos/{slot}:
  *   delete:
  *     tags: [Vehicles]
- *     summary: Remove a single photo (moderator/admin)
+ *     summary: Remove a single photo (admin only)
  *     parameters:
  *       - in: path
  *         name: id
@@ -213,7 +213,7 @@ router.post('/:id/photos', canEdit, uploadVehiclePhotos, handleUploadErrors, upl
  *       403: { $ref: '#/components/responses/Forbidden' }
  *       404: { $ref: '#/components/responses/NotFound' }
  */
-router.delete('/:id/photos/:slot', canEdit, deleteVehiclePhoto);
+router.delete('/:id/photos/:slot', canDelete, deleteVehiclePhoto);
 
 /**
  * @swagger

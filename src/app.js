@@ -72,7 +72,19 @@ app.get('/api/health', (_req, res) => res.status(200).json({ status: 'ok' }));
 // Auth surface documented at /api/docs — kept private (admin-only) since it maps out this
 // app's entire internal API. Auth is required to even load swagger-ui's static assets from
 // here, not just the JSON spec, since both are mounted behind the same guard.
-app.use('/api/docs', requireAuth, requireRole('admin'), swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+// swaggerUi.setup() answers *every* path under /api/docs with the docs HTML page, so if a static
+// asset (swagger-ui.css/-bundle.js) can't be found — e.g. swagger-ui-dist not bundled into the
+// serverless function, see vercel.json includeFiles — the browser gets HTML back for a
+// stylesheet/script ("Refused to apply style ... MIME type text/html"). Only the index path gets
+// the HTML page; anything else that swaggerUi.serve didn't resolve falls through to a real 404.
+const swaggerIndex = swaggerUi.setup(swaggerSpec);
+app.use(
+  '/api/docs',
+  requireAuth,
+  requireRole('admin'),
+  swaggerUi.serve,
+  (req, res, next) => (req.path === '/' ? swaggerIndex(req, res, next) : next())
+);
 app.get('/api/docs.json', requireAuth, requireRole('admin'), (_req, res) => res.status(200).json(swaggerSpec));
 
 app.use('/api/auth/login', loginLimiter);
@@ -107,7 +119,7 @@ export function initialize() {
       // { isDeleted: false } query filter does NOT match a field that's genuinely absent from
       // the stored document, so without this, pre-existing records would silently vanish from
       // every list/search/dropdown. Idempotent/self-healing across repeated restarts.
-      const [customerBackfill, vehicleBackfill, tripBackfill, adminRoleBackfill] = await Promise.all([
+      const [customerBackfill, vehicleBackfill, tripBackfill, adminRoleBackfill, adminActiveBackfill] = await Promise.all([
         Customer.collection.updateMany({ isDeleted: { $exists: false } }, { $set: { isDeleted: false } }),
         Vehicle.collection.updateMany({ isDeleted: { $exists: false } }, { $set: { isDeleted: false } }),
         Trip.collection.updateMany({ isDeleted: { $exists: false } }, { $set: { isDeleted: false } }),
@@ -115,7 +127,12 @@ export function initialize() {
         // accounts created afterwards get whatever role the creating admin picked (see
         // authController.createUser), defaulting to viewer.
         Admin.collection.updateMany({ role: { $exists: false } }, { $set: { role: 'admin' } }),
+        // Accounts that predate the soft-delete/disable flag are all active.
+        Admin.collection.updateMany({ isActive: { $exists: false } }, { $set: { isActive: true } }),
       ]);
+      if (adminActiveBackfill.modifiedCount) {
+        console.log(`Backfilled isActive:true on ${adminActiveBackfill.modifiedCount} pre-existing account(s)`);
+      }
       if (customerBackfill.modifiedCount || vehicleBackfill.modifiedCount || tripBackfill.modifiedCount) {
         console.log(
           `Backfilled isDeleted on ${customerBackfill.modifiedCount} customer(s), ${vehicleBackfill.modifiedCount} vehicle(s), ${tripBackfill.modifiedCount} trip(s)`

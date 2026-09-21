@@ -20,6 +20,12 @@ const couponSchema = new mongoose.Schema(
       required: [true, 'Value is required'],
       min: [1, 'Value must be greater than 0'],
     },
+    // Percentage coupons only: cap on the rupee discount (e.g. 20% up to ₹100). Left unset for
+    // "no cap", and always unset for flat coupons.
+    maxDiscount: {
+      type: Number,
+      min: [1, 'Maximum discount must be at least 1'],
+    },
     applicability: {
       type: String,
       enum: ['all', 'selected'],

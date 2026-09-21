@@ -82,7 +82,7 @@ router.get('/stats', getStats);
  *       start/expiry window and under its maxUsage, otherwise the request is rejected (400, or 409 if
  *       the last use was taken concurrently). On success one use is reserved atomically
  *       (usageCount + 1), the discount is taken off `amount` (stored net) and recorded as
- *       couponCode/couponDiscount. The coupon cannot be changed once the trip exists.
+ *       couponCode/couponDiscount. It can also be added later through PUT /trips/{id} if none is applied yet, but never swapped or removed.
  *     requestBody:
  *       required: true
  *       content:
@@ -115,7 +115,12 @@ router.post('/', canEdit, tripValidators, createTrip);
  *   put:
  *     tags: [Trips]
  *     summary: Update a trip (moderator/admin)
- *     description: Which fields can change depends on the trip's current status — see EDITABLE_FIELDS_BY_STATUS in tripController.js. Cancelled trips can't be edited at all.
+ *     description: >
+ *       Which fields can change depends on the trip's current status — see EDITABLE_FIELDS_BY_STATUS
+ *       in tripController.js. Cancelled trips can't be edited at all. End date/time can never be
+ *       before the start (400). A `coupon` (ObjectId) can be added here if the trip doesn't have one
+ *       yet, with the same eligibility and usage rules as on create; the amount sent is treated as
+ *       the amount before discount and is stored net. A coupon already on the trip can't be changed.
  *     parameters:
  *       - in: path
  *         name: id

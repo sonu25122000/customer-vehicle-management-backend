@@ -28,6 +28,12 @@ export const couponValidators = [
       }
       return true;
     }),
+  // Percentage coupons only (ignored for flat) — an optional cap on the rupee discount.
+  body('maxDiscount')
+    .optional({ checkFalsy: true })
+    .isFloat({ min: 1 })
+    .withMessage('Maximum discount must be at least ₹1')
+    .toFloat(),
   body('applicability').trim().notEmpty().withMessage('Applicability is required').isIn(['all', 'selected']).withMessage('Invalid applicability'),
   body('customers')
     .custom((value, { req }) => {
@@ -135,7 +141,7 @@ export const applicableValidators = [query('customer').isMongoId().withMessage('
 export const listApplicableCoupons = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
   const coupons = await Coupon.find(applicableCouponFilter(req.query.customer))
-    .select('code discountType value applicability startAt expiresAt maxUsage usageCount')
+    .select('code discountType value maxDiscount applicability startAt expiresAt maxUsage usageCount')
     .sort({ createdAt: -1 });
   res.status(200).json({ data: coupons });
 });
@@ -153,7 +159,7 @@ export const getCoupon = asyncHandler(async (req, res) => {
 export const createCoupon = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { code, discountType, value, applicability, customers, startAt, expiresAt, maxUsage } = req.body;
+  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage } = req.body;
 
   if (new Date(expiresAt) <= new Date()) {
     return res.status(400).json({ message: 'Expiry date/time must be in the future' });
@@ -168,6 +174,7 @@ export const createCoupon = asyncHandler(async (req, res) => {
     code,
     discountType,
     value,
+    maxDiscount: discountType === 'percentage' ? maxDiscount || undefined : undefined,
     applicability,
     customers: applicability === 'selected' ? customers : [],
     startAt,
@@ -184,7 +191,7 @@ export const createCoupon = asyncHandler(async (req, res) => {
 export const updateCoupon = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { code, discountType, value, applicability, customers, startAt, expiresAt, maxUsage, isActive } = req.body;
+  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage, isActive } = req.body;
 
   const duplicate = await findDuplicate(code, req.params.id);
   if (duplicate) {
@@ -209,6 +216,7 @@ export const updateCoupon = asyncHandler(async (req, res) => {
     code,
     discountType,
     value,
+    maxDiscount: discountType === 'percentage' ? maxDiscount || undefined : undefined,
     applicability,
     customers: applicability === 'selected' ? customers : [],
     startAt,

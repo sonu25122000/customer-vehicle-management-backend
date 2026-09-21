@@ -32,10 +32,12 @@ export function applicableCouponFilter(customerId, now = new Date(), couponId) {
   return filter;
 }
 
-// Discount in rupees for a coupon on a given gross amount — a percentage of it, or a flat amount,
-// never more than the amount itself (so the net amount can't go negative).
+// Discount in rupees for a coupon on a given gross amount — a percentage of it (capped at the
+// coupon's maxDiscount when it has one, e.g. 20% up to ₹100), or a flat amount — never more than the
+// amount itself (so the net amount can't go negative).
 export function calculateDiscount(coupon, amount) {
   const gross = Number(amount) || 0;
-  const raw = coupon.discountType === 'percentage' ? (gross * coupon.value) / 100 : coupon.value;
+  let raw = coupon.discountType === 'percentage' ? (gross * coupon.value) / 100 : coupon.value;
+  if (coupon.discountType === 'percentage' && coupon.maxDiscount) raw = Math.min(raw, coupon.maxDiscount);
   return Math.round(Math.min(Math.max(raw, 0), gross) * 100) / 100;
 }

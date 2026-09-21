@@ -148,7 +148,15 @@ const swaggerDefinition = {
       'is admin-only — and (2) the Users module (/auth/users*), which is admin-only. Moderators can ' +
       'view, create and edit coupons. admin = everything.',
   },
-  servers: [{ url: (process.env.PUBLIC_API_URL || `http://localhost:${process.env.PORT || 5000}`) + '/api' }],
+  // The live site is the default server (same origin as /api/docs there, so the session cookie is
+  // sent along with "Try it out"). PUBLIC_API_URL can override it; a localhost option is only added
+  // outside production so local runs can still test against the local backend.
+  servers: [
+    { url: `${process.env.PUBLIC_API_URL || 'https://www.roamwheels.com'}/api`, description: 'Production' },
+    ...(process.env.NODE_ENV === 'production'
+      ? []
+      : [{ url: `http://localhost:${process.env.PORT || 5000}/api`, description: 'Local' }]),
+  ],
   components: {
     schemas,
     responses,

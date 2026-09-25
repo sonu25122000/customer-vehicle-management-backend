@@ -153,23 +153,23 @@ router.patch('/max-sessions', requireAuth, maxSessionsValidators, updateMaxSessi
  * /auth/users:
  *   get:
  *     tags: [Auth]
- *     summary: List staff accounts, filtered by Active / Inactive tab (admin only)
- *     description: Moderators and viewers get 403 — the Users module is admin-only. Returns the accounts for the requested tab plus the counts for both tabs.
+ *     summary: List staff accounts, filtered by Active / Inactive / All tab (admin only)
+ *     description: Moderators and viewers get 403 — the Users module is admin-only. Returns the accounts for the requested tab plus the counts for every tab.
  *     parameters:
  *       - in: query
  *         name: status
- *         schema: { type: string, enum: [active, inactive], default: active }
- *         description: 'active = enabled accounts (default), inactive = deactivated / soft-deleted accounts'
+ *         schema: { type: string, enum: [active, inactive, all], default: active }
+ *         description: 'active = enabled accounts (default), inactive = deactivated / soft-deleted accounts, all = both'
  *     responses:
  *       200:
- *         description: List of accounts for the tab, plus counts for both tabs
+ *         description: List of accounts for the tab, plus counts for every tab
  *         content:
  *           application/json:
  *             schema:
  *               type: object
  *               properties:
  *                 data: { type: array, items: { $ref: '#/components/schemas/Admin' } }
- *                 counts: { type: object, properties: { active: { type: integer }, inactive: { type: integer } } }
+ *                 counts: { type: object, properties: { active: { type: integer }, inactive: { type: integer }, all: { type: integer } } }
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       403: { $ref: '#/components/responses/Forbidden' }
  *   post:

@@ -67,21 +67,8 @@ const vehicleSchema = new mongoose.Schema(
       required: [true, 'Owner mobile is required'],
       trim: true,
     },
-    // Stored as base64 data URIs directly in the document (no filesystem/object storage
-    // configured for this project) — kept small via upload-time size limits so a vehicle
-    // document stays well under MongoDB's 16MB document cap.
-    photos: {
-      front: { type: String, default: '' },
-      back: { type: String, default: '' },
-      passengerSide: { type: String, default: '' },
-      driverSide: { type: String, default: '' },
-      additional: { type: [String], default: [] },
-    },
-    // Same storage approach as photos — base64 data URIs, image or PDF.
-    documents: {
-      rc: { type: String, default: '' },
-      insurance: { type: String, default: '' },
-    },
+    // Photos and documents (RC / insurance) live in their own VehiclePhoto and VehicleDocument
+    // collections, linked back by vehicle id — see models/VehiclePhoto.js and models/VehicleDocument.js.
     isDeleted: {
       type: Boolean,
       default: false,

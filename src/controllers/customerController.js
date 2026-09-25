@@ -2,7 +2,9 @@ import { body, query, validationResult } from 'express-validator';
 import mongoose from 'mongoose';
 import Customer from '../models/Customer.js';
 import Trip from '../models/Trip.js';
+import CustomerDocument from '../models/CustomerDocument.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { documentTypesByCustomer } from '../utils/media.js';
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -75,22 +77,32 @@ function buildFilter({ search, minRating, startDate, endDate, customerIds }) {
   return filter;
 }
 
-// Trip now owns booking history — "Last Booked Date" is the most recent non-deleted trip's
-// start date for each customer, computed on read rather than stored redundantly on Customer.
-async function attachLastBookedDates(customers) {
+// Fields computed on read rather than stored on Customer:
+//  - lastBookedDate: Trip owns booking history, so this is the most recent non-deleted trip's start
+//    date for each customer.
+//  - documentTypes: which verification documents are on file (e.g. ['selfie', 'aadhaar']). The files
+//    themselves live in the CustomerDocument collection and are fetched from /api/customer-documents.
+async function attachDerivedFields(customers) {
   const ids = customers.map((c) => c._id);
   if (!ids.length) return customers;
 
-  const rows = await Trip.aggregate([
-    { $match: { customer: { $in: ids }, isDeleted: false } },
-    { $sort: { startDate: -1 } },
-    { $group: { _id: '$customer', lastBookedDate: { $first: '$startDate' } } },
+  const [rows, documentTypes] = await Promise.all([
+    Trip.aggregate([
+      { $match: { customer: { $in: ids }, isDeleted: false } },
+      { $sort: { startDate: -1 } },
+      { $group: { _id: '$customer', lastBookedDate: { $first: '$startDate' } } },
+    ]),
+    documentTypesByCustomer(ids),
   ]);
   const byId = new Map(rows.map((r) => [String(r._id), r.lastBookedDate]));
 
   return customers.map((c) => {
     const obj = c.toObject ? c.toObject() : c;
-    return { ...obj, lastBookedDate: byId.get(String(c._id)) || null };
+    return {
+      ...obj,
+      lastBookedDate: byId.get(String(c._id)) || null,
+      documentTypes: documentTypes.get(String(c._id)) || [],
+    };
   });
 }
 
@@ -162,7 +174,7 @@ export const listCustomers = asyncHandler(async (req, res) => {
   ]);
 
   res.status(200).json({
-    data: await attachLastBookedDates(customers),
+    data: await attachDerivedFields(customers),
     pagination: {
       page,
       limit,
@@ -187,7 +199,7 @@ export const getCustomer = asyncHandler(async (req, res) => {
   if (!customer) {
     return res.status(404).json({ message: 'Customer not found' });
   }
-  const [withLastBooked] = await attachLastBookedDates([customer]);
+  const [withLastBooked] = await attachDerivedFields([customer]);
   res.status(200).json({ data: withLastBooked });
 });
 
@@ -214,7 +226,8 @@ export const createCustomer = asyncHandler(async (req, res) => {
     profileVerified: 'Pending',
   });
 
-  res.status(201).json({ data: customer, message: 'Customer created successfully' });
+  const [withDerived] = await attachDerivedFields([customer]);
+  res.status(201).json({ data: withDerived, message: 'Customer created successfully' });
 });
 
 // PUT/PATCH /api/customers/:id
@@ -236,12 +249,12 @@ export const updateCustomer = asyncHandler(async (req, res) => {
   // on file — a trip still can't be started until this profile is Accepted either (see
   // tripController.updateTrip's "On Trip" check).
   if (profileVerified === 'Accepted') {
-    const existing = await Customer.findOne({ _id: req.params.id, isDeleted: false });
+    const existing = await Customer.findOne({ _id: req.params.id, isDeleted: false }, '_id');
     if (!existing) {
       return res.status(404).json({ message: 'Customer not found' });
     }
-    const docs = existing.documents || {};
-    if (!(docs.selfie && docs.drivingLicence && docs.aadhaar)) {
+    const types = await CustomerDocument.distinct('type', { customer: existing._id, isDeleted: false });
+    if (!['selfie', 'drivingLicence', 'aadhaar'].every((type) => types.includes(type))) {
       return res.status(400).json({
         message: 'Upload the selfie, driving licence and Aadhaar before accepting this profile',
       });
@@ -266,7 +279,8 @@ export const updateCustomer = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Customer not found' });
   }
 
-  res.status(200).json({ data: customer, message: 'Customer updated successfully' });
+  const [withDerived] = await attachDerivedFields([customer]);
+  res.status(200).json({ data: withDerived, message: 'Customer updated successfully' });
 });
 
 // DELETE /api/customers/:id — soft delete
@@ -280,30 +294,6 @@ export const deleteCustomer = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Customer not found' });
   }
   res.status(200).json({ message: 'Customer deleted successfully' });
-});
-
-const DOCUMENT_FIELDS = { selfie: 'selfie', drivingLicence: 'drivingLicence', aadhaar: 'aadhaar', other: 'other' };
-
-function toDataUri(file) {
-  return `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
-}
-
-// POST /api/customers/:id/documents (multipart/form-data)
-export const uploadCustomerDocuments = asyncHandler(async (req, res) => {
-  const customer = await Customer.findOne({ _id: req.params.id, isDeleted: false });
-  if (!customer) {
-    return res.status(404).json({ message: 'Customer not found' });
-  }
-
-  const files = req.files || {};
-  for (const field of Object.keys(DOCUMENT_FIELDS)) {
-    if (files[field]?.[0]) {
-      customer.documents[field] = toDataUri(files[field][0]);
-    }
-  }
-
-  await customer.save();
-  res.status(200).json({ data: customer, message: 'Documents uploaded successfully' });
 });
 
 // GET /api/customers/stats?startDate=&endDate=
@@ -348,7 +338,7 @@ export const getStats = asyncHandler(async (req, res) => {
       avgRating: summary?.avgRating ? Math.round(summary.avgRating * 10) / 10 : 0,
       ratingDistribution,
       typeCounts,
-      recentCustomers: await attachLastBookedDates(recentCustomers),
+      recentCustomers: await attachDerivedFields(recentCustomers),
     },
   });
 });

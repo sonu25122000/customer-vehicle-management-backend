@@ -34,7 +34,28 @@ const schemas = {
       rating: { type: 'integer', minimum: 1, maximum: 5 },
       customerType: { type: 'string', enum: ['VIP', 'Good', 'Bad'] },
       profileVerified: { type: 'string', enum: ['Accepted', 'Rejected', 'Pending'] },
+      documentTypes: {
+        type: 'array',
+        readOnly: true,
+        items: { type: 'string', enum: ['selfie', 'drivingLicence', 'aadhaar', 'other'] },
+        description: 'Document types on file. The files themselves come from GET /customer-documents?customer=<id>.',
+      },
       isDeleted: { type: 'boolean' },
+    },
+  },
+  CustomerDocument: {
+    type: 'object',
+    properties: {
+      _id: { type: 'string' },
+      customer: {
+        description: 'Customer ObjectId (populated with name and mobile1 on read)',
+        oneOf: [{ type: 'string' }, { type: 'object', properties: { _id: { type: 'string' }, name: { type: 'string' }, mobile1: { type: 'string' } } }],
+      },
+      type: { type: 'string', enum: ['selfie', 'drivingLicence', 'aadhaar', 'other'] },
+      file: { type: 'string', description: 'base64 data URI (image or PDF)' },
+      mimeType: { type: 'string', example: 'image/jpeg' },
+      size: { type: 'integer', description: 'Bytes' },
+      createdAt: { type: 'string', format: 'date-time' },
     },
   },
   Vehicle: {
@@ -52,7 +73,51 @@ const schemas = {
       year: { type: 'integer', example: 2026 },
       ownerName: { type: 'string' },
       ownerMobile: { type: 'string' },
+      photoSlots: {
+        type: 'array',
+        readOnly: true,
+        items: { type: 'string', enum: ['front', 'back', 'passengerSide', 'driverSide', 'additional'] },
+        description: 'Photo slots on file (GET /vehicles/{id}). The images come from GET /vehicle-photos?vehicle=<id>.',
+      },
+      photoCount: { type: 'integer', readOnly: true },
+      documentTypes: {
+        type: 'array',
+        readOnly: true,
+        items: { type: 'string', enum: ['rc', 'insurance'] },
+        description: 'Document types on file (GET /vehicles/{id}). The files come from GET /vehicle-documents?vehicle=<id>.',
+      },
+      documentCount: { type: 'integer', readOnly: true },
       isDeleted: { type: 'boolean' },
+    },
+  },
+  VehiclePhoto: {
+    type: 'object',
+    properties: {
+      _id: { type: 'string' },
+      vehicle: {
+        description: 'Vehicle ObjectId (populated with vehicleNo, make and model on read)',
+        oneOf: [{ type: 'string' }, { type: 'object', properties: { _id: { type: 'string' }, vehicleNo: { type: 'string' } } }],
+      },
+      slot: { type: 'string', enum: ['front', 'back', 'passengerSide', 'driverSide', 'additional'] },
+      image: { type: 'string', description: 'base64 data URI' },
+      mimeType: { type: 'string', example: 'image/jpeg' },
+      size: { type: 'integer', description: 'Bytes' },
+      createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  VehicleDocument: {
+    type: 'object',
+    properties: {
+      _id: { type: 'string' },
+      vehicle: {
+        description: 'Vehicle ObjectId (populated with vehicleNo, make and model on read)',
+        oneOf: [{ type: 'string' }, { type: 'object', properties: { _id: { type: 'string' }, vehicleNo: { type: 'string' } } }],
+      },
+      type: { type: 'string', enum: ['rc', 'insurance'] },
+      file: { type: 'string', description: 'base64 data URI (image or PDF)' },
+      mimeType: { type: 'string', example: 'application/pdf' },
+      size: { type: 'integer', description: 'Bytes' },
+      createdAt: { type: 'string', format: 'date-time' },
     },
   },
   Trip: {

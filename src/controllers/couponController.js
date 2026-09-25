@@ -1,7 +1,7 @@
 import { body, query, validationResult } from 'express-validator';
 import Coupon from '../models/Coupon.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { applicableCouponFilter, isOnTimeSlot, TIME_SLOT_MINUTES } from '../utils/couponRules.js';
+import { applicableCouponFilter, deactivateExpiredCoupons, isOnTimeSlot, TIME_SLOT_MINUTES } from '../utils/couponRules.js';
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -107,6 +107,8 @@ export const listCoupons = asyncHandler(async (req, res) => {
     filter.code = new RegExp(escapeRegex(search), 'i');
   }
 
+  await deactivateExpiredCoupons();
+
   const [coupons, total] = await Promise.all([
     Coupon.find(filter)
       .populate('customers', CUSTOMERS_POPULATE)
@@ -125,6 +127,7 @@ export const listCoupons = asyncHandler(async (req, res) => {
 // GET /api/coupons/stats — Total / Active / Expired, for the Coupons page stat tiles
 export const getCouponStats = asyncHandler(async (_req, res) => {
   const now = new Date();
+  await deactivateExpiredCoupons(now);
   const [total, active, expired] = await Promise.all([
     Coupon.countDocuments({ isDeleted: false }),
     Coupon.countDocuments({ isDeleted: false, isActive: true, startAt: { $lte: now }, expiresAt: { $gte: now } }),
@@ -159,7 +162,7 @@ export const getCoupon = asyncHandler(async (req, res) => {
 export const createCoupon = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage } = req.body;
+  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage, isActive } = req.body;
 
   if (new Date(expiresAt) <= new Date()) {
     return res.status(400).json({ message: 'Expiry date/time must be in the future' });
@@ -181,6 +184,8 @@ export const createCoupon = asyncHandler(async (req, res) => {
     expiresAt,
     maxUsage,
     usageCount: 0,
+    // Honour the form's Active checkbox. Leaving it out keeps the schema default (active).
+    isActive: isActive === undefined ? true : isActive,
   });
   await coupon.populate('customers', CUSTOMERS_POPULATE);
 

@@ -1,3 +1,5 @@
+import Coupon from '../models/Coupon.js';
+
 // Rules shared by the coupon module (validation / applicable list) and the trip module
 // (validating and redeeming a coupon when a trip is booked), kept in one place so "is this
 // coupon usable right now?" can't drift between the two.
@@ -30,6 +32,14 @@ export function applicableCouponFilter(customerId, now = new Date(), couponId) {
   };
   if (couponId) filter._id = couponId;
   return filter;
+}
+
+// Flips every coupon that is still marked active but whose expiry has passed to inactive. Run at the
+// start of each coupon read (list/stats/applicable) so stored state matches reality. It only touches
+// coupons that are still active; ones already deactivated are skipped by the filter, and the
+// { isActive, expiresAt } index on Coupon keeps this a cheap index scan.
+export function deactivateExpiredCoupons(now = new Date()) {
+  return Coupon.updateMany({ isDeleted: false, isActive: true, expiresAt: { $lt: now } }, { $set: { isActive: false } });
 }
 
 // Discount in rupees for a coupon on a given gross amount — a percentage of it (capped at the

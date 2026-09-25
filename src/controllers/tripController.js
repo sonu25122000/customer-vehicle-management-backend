@@ -74,6 +74,9 @@ const EDITABLE_FIELDS_BY_STATUS = {
   Cancelled: [],
 };
 
+// Statuses in which the trip's coupon can still be kept, swapped or removed (see updateTrip).
+const COUPON_EDITABLE_STATUSES = ['Yet to Start', 'On Trip'];
+
 export const listValidators = [
   query('page').optional().isInt({ min: 1 }).toInt(),
   query('limit').optional().isInt({ min: 1, max: 100 }).toInt(),
@@ -105,7 +108,8 @@ export const tripValidators = [
   body('refundAmount').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('Refund amount must be a positive number'),
   body('startOdometer').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('Starting odometer must be a positive number'),
   body('endOdometer').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('Ending odometer must be a positive number'),
-  // Optional; only honoured when creating a trip (see createTrip) — ignored on update.
+  // Optional. Applied on create; on update it keeps, swaps or removes the trip's coupon while the
+  // trip is Yet to Start or On Trip (see updateTrip).
   body('coupon').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid coupon selected'),
   body('status').trim().notEmpty().withMessage('Trip status is required').isIn(STATUSES).withMessage('Invalid trip status'),
   body('rating').optional({ checkFalsy: true }).isInt({ min: 1, max: 5 }).withMessage('Rating must be between 1 and 5'),
@@ -418,28 +422,44 @@ export const updateTrip = asyncHandler(async (req, res) => {
     next[field] = editableFields.includes(field) && field in req.body ? req.body[field] : existing[field];
   }
 
-  // A coupon can be added while editing (once — a coupon already on the trip can't be swapped
-  // or removed). Eligibility is checked now for a clear error message and again atomically when the
-  // usage is reserved below. The amount being saved is treated as the amount BEFORE the discount,
-  // and is stored net of it, exactly like at creation.
-  let couponDoc = null;
-  let couponDiscount = 0;
-  if (req.body.coupon) {
-    if (existing.coupon) {
-      if (String(existing.coupon) !== String(req.body.coupon)) {
-        return res.status(400).json({ message: 'A coupon has already been applied to this trip and cannot be changed' });
-      }
-    } else {
-      couponDoc = await Coupon.findOne(applicableCouponFilter(existing.customer, new Date(), req.body.coupon));
+  // Coupon on edit. While the trip is Yet to Start or On Trip, a request that carries a `coupon` key
+  // decides the trip's coupon:
+  //  - the same coupon as now: kept, and it stays valid even if it has expired, been deactivated or
+  //    used up since it was applied. Its discount is recomputed on the new amount.
+  //  - a different coupon: must be applicable right now (checked here for a clear message, then again
+  //    atomically when its use is reserved below). The old coupon's use is handed back.
+  //  - empty: the coupon is removed and its use handed back.
+  // In that case `amount` is the amount BEFORE the discount, stored net of it (same as createTrip).
+  // Without a `coupon` key, or once Completed, the coupon is left alone and `amount` is stored as sent.
+  const currentCouponId = existing.coupon ? String(existing.coupon) : '';
+  const couponEditable = COUPON_EDITABLE_STATUSES.includes(existing.status);
+  if ('coupon' in req.body && !couponEditable && String(req.body.coupon || '') !== currentCouponId) {
+    return res.status(400).json({ message: 'The coupon can only be changed while a trip is Yet to Start or On Trip' });
+  }
+  const couponRequested = couponEditable && 'coupon' in req.body;
+  const requestedCouponId = couponRequested ? String(req.body.coupon || '') : currentCouponId;
+  let couponDoc = null; // a newly chosen coupon, reserved below
+  let couponDiscount = Number(existing.couponDiscount) || 0;
+  let netAmount = next.amount;
+  if (couponRequested) {
+    const gross = Number(next.amount) || 0;
+    if (requestedCouponId && requestedCouponId === currentCouponId) {
+      const kept = await Coupon.findById(currentCouponId);
+      couponDiscount = kept ? calculateDiscount(kept, gross) : Math.min(couponDiscount, gross);
+    } else if (requestedCouponId) {
+      couponDoc = await Coupon.findOne(applicableCouponFilter(existing.customer, new Date(), requestedCouponId));
       if (!couponDoc) {
         return res.status(400).json({
           message: 'This coupon cannot be applied — it is inactive, expired, not valid for this customer, or has reached its usage limit',
         });
       }
-      couponDiscount = calculateDiscount(couponDoc, next.amount);
+      couponDiscount = calculateDiscount(couponDoc, gross);
+    } else {
+      couponDiscount = 0;
     }
+    netAmount = Math.max(gross - couponDiscount, 0);
   }
-  const netAmount = couponDoc ? Math.max((Number(next.amount) || 0) - couponDiscount, 0) : next.amount;
+  const releaseOldCoupon = Boolean(currentCouponId) && requestedCouponId !== currentCouponId;
 
   const businessError = checkBusinessRules({
     status: requestedStatus,
@@ -522,6 +542,12 @@ export const updateTrip = asyncHandler(async (req, res) => {
     existing.coupon = couponDoc._id;
     existing.couponCode = couponDoc.code;
     existing.couponDiscount = couponDiscount;
+  } else if (couponRequested && !requestedCouponId) {
+    existing.coupon = undefined;
+    existing.couponCode = undefined;
+    existing.couponDiscount = 0;
+  } else if (couponRequested) {
+    existing.couponDiscount = couponDiscount;
   }
 
   try {
@@ -529,6 +555,10 @@ export const updateTrip = asyncHandler(async (req, res) => {
   } catch (err) {
     if (couponReserved) await Coupon.updateOne({ _id: couponDoc._id }, { $inc: { usageCount: -1 } });
     throw err;
+  }
+  // The trip no longer uses its previous coupon, so that use goes back to the coupon's allowance.
+  if (releaseOldCoupon) {
+    await Coupon.updateOne({ _id: currentCouponId, usageCount: { $gt: 0 } }, { $inc: { usageCount: -1 } });
   }
   await existing.populate([{ path: 'customer', select: CUSTOMER_POPULATE }, { path: 'vehicle', select: VEHICLE_POPULATE }]);
 

@@ -136,17 +136,36 @@ export const getCouponStats = asyncHandler(async (_req, res) => {
   res.status(200).json({ data: { total, active, expired } });
 });
 
-export const applicableValidators = [query('customer').isMongoId().withMessage('A valid customer is required')];
+export const applicableValidators = [
+  query('customer').isMongoId().withMessage('A valid customer is required'),
+  query('current').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid current coupon'),
+];
 
-// GET /api/coupons/applicable?customer=<id> — coupons the trip form offers for this customer: live
-// right now (active, inside its start/expiry window), not used up, and either open to all
-// customers or listing this customer.
+const APPLICABLE_FIELDS = 'code discountType value maxDiscount applicability startAt expiresAt maxUsage usageCount';
+
+// GET /api/coupons/applicable?customer=<id>&current=<couponId> — coupons the trip form offers for this
+// customer: live right now (active, inside its start/expiry window), not used up, and either open to
+// all customers or listing this customer.
+// `current` is the coupon already on the trip being edited. It is always returned, flagged
+// isCurrent, even if it has since expired, been deactivated or used up, because a coupon already
+// applied to a trip stays valid on that trip (see tripController.updateTrip). stillApplicable tells
+// the form whether it could be picked fresh today.
 export const listApplicableCoupons = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
-  const coupons = await Coupon.find(applicableCouponFilter(req.query.customer))
-    .select('code discountType value maxDiscount applicability startAt expiresAt maxUsage usageCount')
-    .sort({ createdAt: -1 });
-  res.status(200).json({ data: coupons });
+  await deactivateExpiredCoupons();
+
+  const [applicable, current] = await Promise.all([
+    Coupon.find(applicableCouponFilter(req.query.customer)).select(APPLICABLE_FIELDS).sort({ createdAt: -1 }).lean(),
+    req.query.current ? Coupon.findById(req.query.current).select(APPLICABLE_FIELDS).lean() : null,
+  ]);
+
+  const data = applicable.map((c) => ({ ...c, isCurrent: false, stillApplicable: true }));
+  if (current) {
+    const index = data.findIndex((c) => String(c._id) === String(current._id));
+    if (index >= 0) data[index].isCurrent = true;
+    else data.unshift({ ...current, isCurrent: true, stillApplicable: false });
+  }
+  res.status(200).json({ data });
 });
 
 // GET /api/coupons/:id

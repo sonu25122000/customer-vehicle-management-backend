@@ -7,13 +7,11 @@ import {
   deleteCustomer,
   getStats,
   listCustomerOptions,
-  uploadCustomerDocuments,
   listValidators,
   statsValidators,
   customerValidators,
 } from '../controllers/customerController.js';
 import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
-import { uploadCustomerDocuments as uploadCustomerDocumentsMiddleware, handleUploadErrors } from '../middleware/upload.js';
 
 const router = Router();
 
@@ -26,7 +24,7 @@ const canEdit = requireRole('moderator', 'admin');
  * @swagger
  * tags:
  *   - name: Customers
- *     description: Renter records, verification and documents
+ *     description: Renter records and verification (documents are under Customer Documents)
  */
 
 /**
@@ -149,35 +147,5 @@ router.get('/:id', getCustomer);
 router.put('/:id', canEdit, customerValidators, updateCustomer);
 router.patch('/:id', canEdit, customerValidators, updateCustomer);
 router.delete('/:id', canDelete, deleteCustomer);
-
-/**
- * @swagger
- * /customers/{id}/documents:
- *   post:
- *     tags: [Customers]
- *     summary: Upload verification documents (selfie, driving licence, Aadhaar) (moderator/admin)
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *     requestBody:
- *       required: true
- *       content:
- *         multipart/form-data:
- *           schema:
- *             type: object
- *             properties:
- *               selfie: { type: string, format: binary }
- *               drivingLicence: { type: string, format: binary }
- *               aadhaar: { type: string, format: binary }
- *               other: { type: string, format: binary }
- *     responses:
- *       200: { description: Uploaded }
- *       401: { $ref: '#/components/responses/Unauthorized' }
- *       403: { $ref: '#/components/responses/Forbidden' }
- *       404: { $ref: '#/components/responses/NotFound' }
- */
-router.post('/:id/documents', canEdit, uploadCustomerDocumentsMiddleware, handleUploadErrors, uploadCustomerDocuments);
 
 export default router;

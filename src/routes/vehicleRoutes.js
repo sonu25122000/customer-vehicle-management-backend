@@ -7,14 +7,10 @@ import {
   createVehicle,
   updateVehicle,
   deleteVehicle,
-  uploadVehiclePhotos as uploadVehiclePhotosController,
-  deleteVehiclePhoto,
-  uploadVehicleDocuments as uploadVehicleDocumentsController,
   listValidators,
   vehicleValidators,
 } from '../controllers/vehicleController.js';
 import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
-import { uploadVehiclePhotos, uploadVehicleDocuments, handleUploadErrors } from '../middleware/upload.js';
 
 const router = Router();
 
@@ -27,7 +23,7 @@ const canEdit = requireRole('moderator', 'admin');
  * @swagger
  * tags:
  *   - name: Vehicles
- *     description: Fleet records, photos and documents
+ *     description: Fleet records (photos and documents are under Vehicle Photos / Vehicle Documents)
  */
 
 /**
@@ -89,7 +85,7 @@ router.get('/options', listVehicleOptions);
  *   post:
  *     tags: [Vehicles]
  *     summary: Create a vehicle (moderator/admin)
- *     description: Always created with status "On Hold" — Active requires all 4 photo sides, uploaded afterwards.
+ *     description: Always created with status "On Hold" — Active requires all 4 photo sides, uploaded afterwards via POST /vehicle-photos.
  *     requestBody:
  *       required: true
  *       content:
@@ -158,89 +154,5 @@ router.get('/:id', getVehicle);
 router.put('/:id', canEdit, vehicleValidators, updateVehicle);
 router.patch('/:id', canEdit, vehicleValidators, updateVehicle);
 router.delete('/:id', canDelete, deleteVehicle);
-
-/**
- * @swagger
- * /vehicles/{id}/photos:
- *   post:
- *     tags: [Vehicles]
- *     summary: Upload vehicle photos (front/back/passengerSide/driverSide/additional) (moderator/admin)
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *     requestBody:
- *       required: true
- *       content:
- *         multipart/form-data:
- *           schema:
- *             type: object
- *             properties:
- *               front: { type: string, format: binary }
- *               back: { type: string, format: binary }
- *               passengerSide: { type: string, format: binary }
- *               driverSide: { type: string, format: binary }
- *               additional: { type: array, items: { type: string, format: binary } }
- *     responses:
- *       200: { description: Uploaded }
- *       401: { $ref: '#/components/responses/Unauthorized' }
- *       403: { $ref: '#/components/responses/Forbidden' }
- *       404: { $ref: '#/components/responses/NotFound' }
- */
-router.post('/:id/photos', canEdit, uploadVehiclePhotos, handleUploadErrors, uploadVehiclePhotosController);
-
-/**
- * @swagger
- * /vehicles/{id}/photos/{slot}:
- *   delete:
- *     tags: [Vehicles]
- *     summary: Remove a single photo (admin only)
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *       - in: path
- *         name: slot
- *         required: true
- *         schema: { type: string }
- *         description: One of front/back/passengerSide/driverSide, or "additional:<index>"
- *     responses:
- *       200: { description: Removed }
- *       400: { $ref: '#/components/responses/ValidationError' }
- *       401: { $ref: '#/components/responses/Unauthorized' }
- *       403: { $ref: '#/components/responses/Forbidden' }
- *       404: { $ref: '#/components/responses/NotFound' }
- */
-router.delete('/:id/photos/:slot', canDelete, deleteVehiclePhoto);
-
-/**
- * @swagger
- * /vehicles/{id}/documents:
- *   post:
- *     tags: [Vehicles]
- *     summary: Upload RC/Insurance documents (moderator/admin)
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *     requestBody:
- *       required: true
- *       content:
- *         multipart/form-data:
- *           schema:
- *             type: object
- *             properties:
- *               rc: { type: string, format: binary }
- *               insurance: { type: string, format: binary }
- *     responses:
- *       200: { description: Uploaded }
- *       401: { $ref: '#/components/responses/Unauthorized' }
- *       403: { $ref: '#/components/responses/Forbidden' }
- *       404: { $ref: '#/components/responses/NotFound' }
- */
-router.post('/:id/documents', canEdit, uploadVehicleDocuments, handleUploadErrors, uploadVehicleDocumentsController);
 
 export default router;

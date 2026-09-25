@@ -3,7 +3,10 @@ import mongoose from 'mongoose';
 import Vehicle from '../models/Vehicle.js';
 import Trip from '../models/Trip.js';
 import VehicleCatalog from '../models/VehicleCatalog.js';
+import VehiclePhoto, { MAIN_PHOTO_SLOTS } from '../models/VehiclePhoto.js';
+import VehicleDocument from '../models/VehicleDocument.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { vehicleMediaSummary } from '../utils/media.js';
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -152,6 +155,25 @@ function handleValidation(req, res) {
   return true;
 }
 
+// Number of active rows in a media collection (VehiclePhoto / VehicleDocument) for each vehicle,
+// counted without loading the files themselves.
+function mediaCountStages(collectionName, as) {
+  return [
+    {
+      $lookup: {
+        from: collectionName,
+        let: { vehicleId: '$_id' },
+        pipeline: [
+          { $match: { $expr: { $and: [{ $eq: ['$vehicle', '$$vehicleId'] }, { $eq: ['$isDeleted', false] }] } } },
+          { $count: 'n' },
+        ],
+        as,
+      },
+    },
+    { $addFields: { [as]: { $ifNull: [{ $arrayElemAt: [`$${as}.n`, 0] }, 0] } } },
+  ];
+}
+
 // Shared aggregation stages: attach trip-derived stats (tripsCompleted / ratingsGiven /
 // avgRating) without ever shipping actual photo data in the list payload.
 function tripStatsStages() {
@@ -238,15 +260,17 @@ export const listVehicles = asyncHandler(async (req, res) => {
   const basePipeline = [{ $match: filter }, ...tripStatsStages()];
   if (minRating) basePipeline.push({ $match: { avgRating: { $gte: minRating } } });
 
-  // Photo data (base64 data URIs) is intentionally excluded from the list payload — it can run
-  // into the megabytes per vehicle. photoCount/trip stats are computed in the aggregation so
-  // the table can still show accurate badges without shipping the actual images.
+  // Photos and documents live in their own collections (VehiclePhoto / VehicleDocument), so the list
+  // never carries file data. photoCount/documentCount are counted for just this page's vehicles so the
+  // table can still show accurate badges.
   const [vehicles, countResult] = await Promise.all([
     Vehicle.aggregate([
       ...basePipeline,
       { $sort: { createdAt: -1 } },
       { $skip: (page - 1) * limit },
       { $limit: limit },
+      ...mediaCountStages(VehiclePhoto.collection.name, 'photoCount'),
+      ...mediaCountStages(VehicleDocument.collection.name, 'documentCount'),
       {
         $project: {
           vehicleNo: 1,
@@ -266,21 +290,8 @@ export const listVehicles = asyncHandler(async (req, res) => {
           tripsCompleted: 1,
           ratingsGiven: 1,
           avgRating: 1,
-          photoCount: {
-            $add: [
-              { $cond: [{ $ne: [{ $ifNull: ['$photos.front', ''] }, ''] }, 1, 0] },
-              { $cond: [{ $ne: [{ $ifNull: ['$photos.back', ''] }, ''] }, 1, 0] },
-              { $cond: [{ $ne: [{ $ifNull: ['$photos.passengerSide', ''] }, ''] }, 1, 0] },
-              { $cond: [{ $ne: [{ $ifNull: ['$photos.driverSide', ''] }, ''] }, 1, 0] },
-              { $size: { $ifNull: ['$photos.additional', []] } },
-            ],
-          },
-          documentCount: {
-            $add: [
-              { $cond: [{ $ne: [{ $ifNull: ['$documents.rc', ''] }, ''] }, 1, 0] },
-              { $cond: [{ $ne: [{ $ifNull: ['$documents.insurance', ''] }, ''] }, 1, 0] },
-            ],
-          },
+          photoCount: 1,
+          documentCount: 1,
         },
       },
     ]),
@@ -340,15 +351,19 @@ export const getVehicle = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Vehicle not found' });
   }
 
-  const [stats] = await Vehicle.aggregate([
-    { $match: { _id: vehicle._id } },
-    ...tripStatsStages(),
-    { $project: { tripsCompleted: 1, ratingsGiven: 1, avgRating: 1 } },
+  const [[stats], media] = await Promise.all([
+    Vehicle.aggregate([
+      { $match: { _id: vehicle._id } },
+      ...tripStatsStages(),
+      { $project: { tripsCompleted: 1, ratingsGiven: 1, avgRating: 1 } },
+    ]),
+    vehicleMediaSummary(vehicle._id),
   ]);
 
   res.status(200).json({
     data: {
       ...vehicle.toObject(),
+      ...media,
       tripsCompleted: stats?.tripsCompleted || 0,
       ratingsGiven: stats?.ratingsGiven || 0,
       avgRating: stats?.avgRating || 0,
@@ -364,9 +379,9 @@ async function findDuplicate(vehicleNo, excludeId) {
 
 // A vehicle can only go Active once all 4 photo sides are on file — a freshly created vehicle
 // never has any yet, so it can never be created Active either.
-function hasAllPhotoSides(photos) {
-  const p = photos || {};
-  return Boolean(p.front && p.back && p.passengerSide && p.driverSide);
+async function hasAllPhotoSides(vehicleId) {
+  const slots = await VehiclePhoto.distinct('slot', { vehicle: vehicleId, isDeleted: false });
+  return MAIN_PHOTO_SLOTS.every((slot) => slots.includes(slot));
 }
 
 // POST /api/vehicles
@@ -415,7 +430,7 @@ export const updateVehicle = asyncHandler(async (req, res) => {
   }
 
   const nextStatus = status || 'On Hold';
-  if (nextStatus === 'Active' && !hasAllPhotoSides(vehicle.photos)) {
+  if (nextStatus === 'Active' && !(await hasAllPhotoSides(vehicle._id))) {
     return res.status(400).json({
       message: 'Upload all 4 vehicle photos (front, back, passenger side, driver side) before setting status to Active',
     });
@@ -424,7 +439,10 @@ export const updateVehicle = asyncHandler(async (req, res) => {
   vehicle.set({ vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status: nextStatus, make, model, year, ownerName, ownerMobile });
   await vehicle.save();
 
-  res.status(200).json({ data: vehicle, message: 'Vehicle updated successfully' });
+  res.status(200).json({
+    data: { ...vehicle.toObject(), ...(await vehicleMediaSummary(vehicle._id)) },
+    message: 'Vehicle updated successfully',
+  });
 });
 
 // DELETE /api/vehicles/:id — soft delete
@@ -438,75 +456,4 @@ export const deleteVehicle = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Vehicle not found' });
   }
   res.status(200).json({ message: 'Vehicle deleted successfully' });
-});
-
-const PHOTO_FIELDS = ['front', 'back', 'passengerSide', 'driverSide'];
-
-function toDataUri(file) {
-  return `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
-}
-
-// POST /api/vehicles/:id/photos (multipart/form-data)
-export const uploadVehiclePhotos = asyncHandler(async (req, res) => {
-  const vehicle = await Vehicle.findOne({ _id: req.params.id, isDeleted: false });
-  if (!vehicle) {
-    return res.status(404).json({ message: 'Vehicle not found' });
-  }
-
-  const files = req.files || {};
-
-  for (const field of PHOTO_FIELDS) {
-    if (files[field]?.[0]) {
-      vehicle.photos[field] = toDataUri(files[field][0]);
-    }
-  }
-
-  if (files.additional?.length) {
-    const newOnes = files.additional.map(toDataUri);
-    vehicle.photos.additional = [...vehicle.photos.additional, ...newOnes].slice(0, 10);
-  }
-
-  await vehicle.save();
-  res.status(200).json({ data: vehicle, message: 'Photos uploaded successfully' });
-});
-
-// DELETE /api/vehicles/:id/photos/:slot — remove a single photo (main slot, or "additional:<index>")
-export const deleteVehiclePhoto = asyncHandler(async (req, res) => {
-  const vehicle = await Vehicle.findOne({ _id: req.params.id, isDeleted: false });
-  if (!vehicle) {
-    return res.status(404).json({ message: 'Vehicle not found' });
-  }
-
-  const { slot } = req.params;
-  if (PHOTO_FIELDS.includes(slot)) {
-    vehicle.photos[slot] = '';
-  } else if (slot.startsWith('additional:')) {
-    const index = Number(slot.split(':')[1]);
-    vehicle.photos.additional.splice(index, 1);
-  } else {
-    return res.status(400).json({ message: 'Invalid photo slot' });
-  }
-
-  await vehicle.save();
-  res.status(200).json({ data: vehicle, message: 'Photo removed successfully' });
-});
-
-const DOCUMENT_FIELDS = ['rc', 'insurance'];
-
-// POST /api/vehicles/:id/documents (multipart/form-data) — RC / Insurance, image or PDF
-export const uploadVehicleDocuments = asyncHandler(async (req, res) => {
-  const vehicle = await Vehicle.findOne({ _id: req.params.id, isDeleted: false });
-  if (!vehicle) {
-    return res.status(404).json({ message: 'Vehicle not found' });
-  }
-
-  const files = req.files || {};
-  for (const field of DOCUMENT_FIELDS) {
-    if (files[field]?.[0]) {
-      vehicle.documents[field] = toDataUri(files[field][0]);
-    }
-  }
-
-  await vehicle.save();
-  res.status(200).json({ data: vehicle, message: 'Documents uploaded successfully' });
 });

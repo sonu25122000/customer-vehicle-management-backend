@@ -15,6 +15,9 @@ import vehicleRoutes from './routes/vehicleRoutes.js';
 import tripRoutes from './routes/tripRoutes.js';
 import vehicleCatalogRoutes from './routes/vehicleCatalogRoutes.js';
 import couponRoutes from './routes/couponRoutes.js';
+import customerDocumentRoutes from './routes/customerDocumentRoutes.js';
+import vehiclePhotoRoutes from './routes/vehiclePhotoRoutes.js';
+import vehicleDocumentRoutes from './routes/vehicleDocumentRoutes.js';
 import { notFound, errorHandler } from './middleware/errorHandler.js';
 import { requireAuth, requireRole } from './middleware/auth.js';
 import { buildTripId } from './controllers/tripController.js';
@@ -23,6 +26,9 @@ import Customer from './models/Customer.js';
 import Vehicle from './models/Vehicle.js';
 import Trip from './models/Trip.js';
 import Coupon from './models/Coupon.js';
+import CustomerDocument from './models/CustomerDocument.js';
+import VehiclePhoto from './models/VehiclePhoto.js';
+import VehicleDocument from './models/VehicleDocument.js';
 
 // Admin account is created manually (e.g. directly in the database) — not by this app.
 // If ADMIN_USERNAME/ADMIN_PASSWORD are set, this syncs an *existing* admin to match them
@@ -94,6 +100,9 @@ app.use('/api/vehicles', vehicleRoutes);
 app.use('/api/trips', tripRoutes);
 app.use('/api/vehicle-catalog', vehicleCatalogRoutes);
 app.use('/api/coupons', couponRoutes);
+app.use('/api/customer-documents', customerDocumentRoutes);
+app.use('/api/vehicle-photos', vehiclePhotoRoutes);
+app.use('/api/vehicle-documents', vehicleDocumentRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
@@ -159,7 +168,15 @@ export function initialize() {
       }
 
       // Drops any indexes no longer defined on the schema and creates missing ones.
-      await Promise.all([Customer.syncIndexes(), Vehicle.syncIndexes(), Trip.syncIndexes(), Coupon.syncIndexes()]);
+      await Promise.all([
+        Customer.syncIndexes(),
+        Vehicle.syncIndexes(),
+        Trip.syncIndexes(),
+        Coupon.syncIndexes(),
+        CustomerDocument.syncIndexes(),
+        VehiclePhoto.syncIndexes(),
+        VehicleDocument.syncIndexes(),
+      ]);
     })().catch((err) => {
       initPromise = null;
       throw err;

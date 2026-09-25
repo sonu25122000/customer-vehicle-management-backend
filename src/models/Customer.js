@@ -39,14 +39,8 @@ const customerSchema = new mongoose.Schema(
       enum: ['Accepted', 'Rejected', 'Pending'],
       default: 'Pending',
     },
-    // Uploaded separately from a dedicated Documents screen, after the customer is created —
-    // stored as base64 data URIs directly on the document, same approach as vehicle photos.
-    documents: {
-      selfie: { type: String, default: '' },
-      drivingLicence: { type: String, default: '' },
-      aadhaar: { type: String, default: '' },
-      other: { type: String, default: '' },
-    },
+    // Verification documents (selfie, driving licence, Aadhaar, other) live in their own
+    // CustomerDocument collection, linked back by customer id — see models/CustomerDocument.js.
     isDeleted: {
       type: Boolean,
       default: false,

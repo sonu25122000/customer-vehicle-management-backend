@@ -71,7 +71,7 @@ const schemas = {
       advance: { type: 'number' },
       securityDeposit: { type: 'number' },
       refundAmount: { type: 'number' },
-      coupon: { type: 'string', description: 'Optional coupon ObjectId, accepted on create and — if the trip has none yet — on update. Must be applicable to the trip customer (see GET /coupons/applicable) and under its usage limit.' },
+      coupon: { type: 'string', description: 'Optional coupon ObjectId. On create it must be applicable to the trip customer (see GET /coupons/applicable) and under its usage limit. On update, while the trip is Yet to Start or On Trip: the same id keeps the coupon (still valid even if it has expired since), a different id swaps it (must be applicable now), and an empty string removes it.' },
       couponCode: { type: 'string', readOnly: true, description: 'Snapshot of the applied coupon code' },
       couponDiscount: { type: 'number', readOnly: true, description: 'Rupees taken off by the coupon. amount is stored net of this.' },
       startOdometer: { type: 'number' },

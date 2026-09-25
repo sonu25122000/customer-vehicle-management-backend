@@ -11,6 +11,7 @@ import {
   deleteUser,
   updateUserStatus,
   updateMaxSessions,
+  getMaxSessions,
   loginValidators,
   changePasswordValidators,
   createUserValidators,
@@ -116,6 +117,21 @@ router.patch('/change-password', requireAuth, changePasswordValidators, changePa
 /**
  * @swagger
  * /auth/max-sessions:
+ *   get:
+ *     tags: [Auth]
+ *     summary: Get this account's device limit (max active sessions)
+ *     description: Returns how many devices the signed-in account may be logged in on at once, and how many sessions are active right now.
+ *     responses:
+ *       200:
+ *         description: Current limit and active session count
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 maxActiveSessions: { type: integer, example: 1 }
+ *                 activeSessionCount: { type: integer, example: 1 }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
  *   patch:
  *     tags: [Auth]
  *     summary: Set how many devices this account can be logged in on at once
@@ -129,6 +145,7 @@ router.patch('/change-password', requireAuth, changePasswordValidators, changePa
  *       400: { $ref: '#/components/responses/ValidationError' }
  *       401: { $ref: '#/components/responses/Unauthorized' }
  */
+router.get('/max-sessions', requireAuth, getMaxSessions);
 router.patch('/max-sessions', requireAuth, maxSessionsValidators, updateMaxSessions);
 
 /**

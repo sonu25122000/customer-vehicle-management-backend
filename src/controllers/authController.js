@@ -381,6 +381,16 @@ export const updateUserStatus = asyncHandler(async (req, res) => {
   return setUserActive(req, res, req.body.isActive);
 });
 
+// GET /api/auth/max-sessions — the signed-in account's device limit and how many sessions are
+// currently active against it. API/Swagger only; the frontend reads the same values from /auth/me.
+export const getMaxSessions = asyncHandler(async (req, res) => {
+  const admin = await Admin.findById(req.admin.id).select('maxActiveSessions activeSessions');
+  res.status(200).json({
+    maxActiveSessions: admin.maxActiveSessions || DEFAULT_MAX_ACTIVE_SESSIONS,
+    activeSessionCount: admin.activeSessions.length,
+  });
+});
+
 // PATCH /api/auth/max-sessions — lets the signed-in admin set their own device limit.
 export const updateMaxSessions = asyncHandler(async (req, res) => {
   const errors = validationResult(req);

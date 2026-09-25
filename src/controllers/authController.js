@@ -62,7 +62,7 @@ export const userStatusValidators = [
 ];
 
 export const listUsersValidators = [
-  query('status').optional({ checkFalsy: true }).isIn(['active', 'inactive']).withMessage('Invalid status filter'),
+  query('status').optional({ checkFalsy: true }).isIn(['active', 'inactive', 'all']).withMessage('Invalid status filter'),
 ];
 
 export const maxSessionsValidators = [
@@ -251,15 +251,14 @@ export const listUsers = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: errors.array()[0].msg });
   }
 
-  const status = req.query.status === 'inactive' ? 'inactive' : 'active';
+  const filters = { active: ACTIVE_FILTER, inactive: INACTIVE_FILTER, all: {} };
+  const status = filters[req.query.status] ? req.query.status : 'active';
   const [users, active, inactive] = await Promise.all([
-    Admin.find(status === 'inactive' ? INACTIVE_FILTER : ACTIVE_FILTER)
-      .select('username role isActive createdAt deactivatedAt')
-      .sort({ createdAt: 1 }),
+    Admin.find(filters[status]).select('username role isActive createdAt deactivatedAt').sort({ createdAt: 1 }),
     Admin.countDocuments(ACTIVE_FILTER),
     Admin.countDocuments(INACTIVE_FILTER),
   ]);
-  res.status(200).json({ data: users.map(publicUser), counts: { active, inactive } });
+  res.status(200).json({ data: users.map(publicUser), counts: { active, inactive, all: active + inactive } });
 });
 
 // PATCH /api/auth/users/:id/role — admin only. Changes an existing account's role.

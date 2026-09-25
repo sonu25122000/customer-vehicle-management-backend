@@ -53,7 +53,7 @@ function findMake(vehicleTypeEntry, name) {
 }
 
 // Strips every isDeleted entry (at every level) out of the response — the one place that
-// guarantees deleted vehicle types/categories/makes/models never reach the UI, anywhere.
+// guarantees deleted vehicle types/categories/makes/models never reach the vehicle form's dropdowns.
 function serializeCatalog(doc) {
   return {
     vehicleTypes: doc.vehicleTypes
@@ -71,11 +71,31 @@ function serializeCatalog(doc) {
   };
 }
 
-// GET /api/vehicle-catalog — the whole tree, for both the admin management tab and the
-// vehicle form's dropdowns.
-export const listCatalog = asyncHandler(async (_req, res) => {
+// The whole tree including soft-deleted entries, each flagged isActive, for the Vehicle Catalog
+// management page only (?includeInactive=true). Every level is an object here:
+// { vehicleTypes: [{ name, isActive, categories: [{ name, isActive }], makes: [{ name, isActive, models: [{ name, isActive }] }] }] }
+function serializeCatalogWithInactive(doc) {
+  const item = (e) => ({ name: e.name, isActive: !e.isDeleted });
+  return {
+    vehicleTypes: doc.vehicleTypes.map((vt) => ({
+      ...item(vt),
+      categories: vt.categories.map(item),
+      makes: vt.makes.map((m) => ({ ...item(m), models: m.models.map(item) })),
+    })),
+  };
+}
+
+// Active-only tree by default (the vehicle form's dropdowns); the full tree with inactive entries
+// when the request asks for it (the Vehicle Catalog page). Used by every endpoint's response so
+// the page gets the same shape back after add/remove/restore.
+function serializeFor(req, doc) {
+  return req.query.includeInactive === 'true' ? serializeCatalogWithInactive(doc) : serializeCatalog(doc);
+}
+
+// GET /api/vehicle-catalog[?includeInactive=true]
+export const listCatalog = asyncHandler(async (req, res) => {
   const doc = await getCatalogDoc();
-  res.status(200).json({ data: serializeCatalog(doc) });
+  res.status(200).json({ data: serializeFor(req, doc) });
 });
 
 // POST /api/vehicle-catalog — add a vehicle type / category / make / model. Adding a name that
@@ -129,7 +149,7 @@ export const addCatalogItem = asyncHandler(async (req, res) => {
   }
 
   await doc.save();
-  res.status(201).json({ data: serializeCatalog(doc), message: 'Added successfully' });
+  res.status(201).json({ data: serializeFor(req, doc), message: 'Added successfully' });
 });
 
 // POST /api/vehicle-catalog/remove — soft-delete a vehicle type / category / make / model.
@@ -181,5 +201,59 @@ export const removeCatalogItem = asyncHandler(async (req, res) => {
   }
 
   await doc.save();
-  res.status(200).json({ data: serializeCatalog(doc), message: 'Removed successfully' });
+  res.status(200).json({ data: serializeFor(req, doc), message: 'Removed successfully' });
+});
+
+// POST /api/vehicle-catalog/restore — enable a soft-deleted vehicle type / category / make / model
+// again. By default only that one entry is enabled; removing a type or make also disabled everything
+// under it, and those stay disabled until enabled individually. With includeChildren: true, a vehicle
+// type or make is enabled together with everything nested under it. A category/make/model can only be
+// enabled while its parent is active.
+export const restoreCatalogItem = asyncHandler(async (req, res) => {
+  if (!handleValidation(req, res)) return;
+
+  const { kind, vehicleType, make, name } = req.body;
+  const includeChildren = req.body.includeChildren === true;
+  const doc = await getCatalogDoc();
+  const sameName = (e) => e.name.toLowerCase() === name.trim().toLowerCase();
+
+  let entry;
+  if (kind === 'vehicleType') {
+    entry = findVehicleType(doc, name);
+    if (!entry) return res.status(404).json({ message: 'Vehicle type not found' });
+  } else {
+    const vt = findVehicleType(doc, vehicleType);
+    if (!vt) return res.status(404).json({ message: 'Vehicle type not found' });
+    if (vt.isDeleted) return res.status(400).json({ message: `Enable the vehicle type "${vt.name}" first` });
+
+    if (kind === 'category') {
+      entry = vt.categories.find(sameName);
+      if (!entry) return res.status(404).json({ message: 'Category not found' });
+    } else {
+      const mk = kind === 'make' ? null : findMake(vt, make);
+      if (kind === 'model') {
+        if (!mk) return res.status(404).json({ message: 'Make not found' });
+        if (mk.isDeleted) return res.status(400).json({ message: `Enable the make "${mk.name}" first` });
+      }
+      entry = kind === 'make' ? findMake(vt, name) : mk.models.find(sameName);
+      if (!entry) return res.status(404).json({ message: kind === 'make' ? 'Make not found' : 'Model not found' });
+    }
+  }
+
+  const enableAll = (e) => {
+    e.isDeleted = false;
+    (e.categories || []).forEach(enableAll);
+    (e.makes || []).forEach(enableAll);
+    (e.models || []).forEach(enableAll);
+  };
+  const hasDisabledChildren = (e) =>
+    [...(e.categories || []), ...(e.makes || []), ...(e.models || [])].some((c) => c.isDeleted || hasDisabledChildren(c));
+
+  if (!entry.isDeleted && !(includeChildren && hasDisabledChildren(entry))) {
+    return res.status(409).json({ message: 'This entry is already active' });
+  }
+  if (includeChildren) enableAll(entry);
+  else entry.isDeleted = false;
+  await doc.save();
+  res.status(200).json({ data: serializeFor(req, doc), message: 'Enabled successfully' });
 });

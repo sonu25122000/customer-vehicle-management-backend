@@ -3,6 +3,7 @@ import {
   listCatalog,
   addCatalogItem,
   removeCatalogItem,
+  restoreCatalogItem,
   catalogItemValidators,
 } from '../controllers/vehicleCatalogController.js';
 import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
@@ -27,6 +28,15 @@ const canEdit = requireRole('moderator', 'admin');
  *   get:
  *     tags: [Vehicle Catalog]
  *     summary: Get the vehicle type/category/make/model tree
+ *     description: >
+ *       By default only active entries are returned, as plain names (this is what the Vehicle form's
+ *       dropdowns use). With includeInactive=true, soft-deleted entries are included too and every
+ *       entry is an object { name, isActive }, for the Vehicle Catalog management page.
+ *     parameters:
+ *       - in: query
+ *         name: includeInactive
+ *         schema: { type: boolean, default: false }
+ *         description: Also return disabled (soft-deleted) entries, each flagged isActive. Also accepted by POST /vehicle-catalog, /remove and /restore to get the same shape back.
  *     responses:
  *       200:
  *         description: Catalog tree
@@ -102,5 +112,44 @@ router.post('/', canEdit, catalogItemValidators, addCatalogItem);
  *       403: { $ref: '#/components/responses/Forbidden' }
  */
 router.post('/remove', canDelete, catalogItemValidators, removeCatalogItem);
+
+/**
+ * @swagger
+ * /vehicle-catalog/restore:
+ *   post:
+ *     tags: [Vehicle Catalog]
+ *     summary: Enable a disabled vehicle type, category, make or model again (admin only)
+ *     description: >
+ *       By default only the named entry is enabled; entries nested under it that were disabled with it
+ *       stay disabled until enabled individually. With includeChildren true, a vehicle type or make is
+ *       enabled together with everything under it. A category/make/model can only be enabled while
+ *       its vehicle type (and, for a model, its make) is active.
+ *     parameters:
+ *       - in: query
+ *         name: includeInactive
+ *         schema: { type: boolean, default: false }
+ *         description: Return the full tree including disabled entries (see GET /vehicle-catalog)
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [kind, name]
+ *             properties:
+ *               kind: { type: string, enum: [vehicleType, category, make, model] }
+ *               name: { type: string }
+ *               vehicleType: { type: string, description: 'Required when kind is category, make or model' }
+ *               make: { type: string, description: 'Required when kind is model' }
+ *               includeChildren: { type: boolean, default: false, description: 'Vehicle type / make only: also enable everything nested under it' }
+ *     responses:
+ *       200: { description: Updated catalog }
+ *       400: { $ref: '#/components/responses/ValidationError' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ *       409: { description: The entry is already active }
+ */
+router.post('/restore', canDelete, catalogItemValidators, restoreCatalogItem);
 
 export default router;

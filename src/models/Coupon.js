@@ -75,5 +75,7 @@ const couponSchema = new mongoose.Schema(
 // be reused — same pattern as Vehicle.vehicleNo.
 couponSchema.index({ code: 1 }, { unique: true, partialFilterExpression: { isDeleted: false } });
 couponSchema.index({ isDeleted: 1 });
+// Serves deactivateExpiredCoupons (utils/couponRules.js): finds still-active coupons past expiry.
+couponSchema.index({ isActive: 1, expiresAt: 1 }, { partialFilterExpression: { isDeleted: false } });
 
 export default mongoose.model('Coupon', couponSchema);

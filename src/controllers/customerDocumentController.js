@@ -2,7 +2,7 @@ import { body, query, validationResult } from 'express-validator';
 import Customer from '../models/Customer.js';
 import CustomerDocument, { CUSTOMER_DOCUMENT_TYPES } from '../models/CustomerDocument.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { toDataUri } from '../utils/media.js';
+import { objectKey, storeFile, withFileUrls } from '../utils/storage.js';
 import { customerDocumentFileName } from '../utils/fileNames.js';
 import { syncProfileVerification } from '../utils/verification.js';
 
@@ -38,30 +38,37 @@ function handleValidation(req, res) {
   return true;
 }
 
-function findActiveForCustomer(customerId) {
-  return CustomerDocument.find({ customer: customerId, isDeleted: false })
+// The customer's documents, each with `file` set to a short-lived URL of the file in S3.
+async function findActiveForCustomer(customerId) {
+  const rows = await CustomerDocument.find({ customer: customerId, isDeleted: false })
     .populate('customer', CUSTOMER_POPULATE)
     .sort({ createdAt: 1 });
+  return withFileUrls(rows, 'file');
 }
 
 // Stores newly uploaded documents for a customer — shared by the admin portal (here) and the customer
 // site (portalController.uploadDocuments). Each uploaded type replaces that customer's previous
 // document of the same type and starts out Pending review; documents of other types keep their review
-// as they are. Every file gets a generated name (utils/fileNames.js).
+// as they are. Every file gets a generated name (utils/fileNames.js), which is also its S3 object name.
 export async function storeCustomerDocuments(customer, uploads, uploadedBy) {
   const now = new Date();
+  // Files go to S3 first, so a failed upload leaves the customer's current documents untouched.
+  const named = uploads.map((u) => ({ ...u, fileName: customerDocumentFileName(customer, u.type, u.file, now) }));
+  const keys = await Promise.all(
+    named.map(({ file, fileName }) => storeFile(file, objectKey('customers', String(customer._id), 'documents', fileName)))
+  );
   await CustomerDocument.updateMany(
     { customer: customer._id, type: { $in: uploads.map((u) => u.type) }, isDeleted: false },
     { $set: { isDeleted: true } }
   );
   await CustomerDocument.insertMany(
-    uploads.map(({ type, file }) => ({
+    named.map(({ type, file, fileName }, i) => ({
       customer: customer._id,
       type,
-      file: toDataUri(file),
+      s3Key: keys[i],
       mimeType: file.mimetype,
       size: file.size,
-      fileName: customerDocumentFileName(customer, type, file, now),
+      fileName,
       originalName: file.originalname || '',
       uploadedBy,
       status: 'Pending',
@@ -84,7 +91,8 @@ export const getCustomerDocument = asyncHandler(async (req, res) => {
   if (!document) {
     return res.status(404).json({ message: 'Document not found' });
   }
-  res.status(200).json({ data: document });
+  const [withUrl] = await withFileUrls([document], 'file');
+  res.status(200).json({ data: withUrl });
 });
 
 // POST /api/customer-documents (multipart/form-data: customer + any of selfie/drivingLicence/aadhaar/other)

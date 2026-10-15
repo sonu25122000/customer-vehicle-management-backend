@@ -1,16 +1,24 @@
 import crypto from 'crypto';
 import TripOtp from '../models/TripOtp.js';
 
-// Trip start/end OTPs. An admin generates one in the admin portal and shares it with the customer
-// (in person, by phone or WhatsApp); the customer enters it on the customer site to start or end the
-// trip. Admins themselves never need one.
+// Trip start/end OTPs. Every trip gets two static codes the moment it's created — one to start it and
+// one to end it — that only admins can see (admin portal, trip details). The team shares them with the
+// customer, who enters them on the customer site to start / end the trip. Admins never need one
+// themselves: changing the status in the admin portal starts or ends the trip directly.
 //
-// 6 digits rather than 4: the same length people already know from bank/UPI OTPs, and a million
-// possible codes (vs ten thousand) keeps guessing impractical alongside the attempt limit below, and
-// leaves plenty of room for every live code to be different from every other.
+// The codes don't expire and don't change. Each one stops working once it's no longer needed: the
+// start code when the trip starts, both codes when the trip is completed or cancelled.
+//
+// 6 digits: the same length people already know from bank/UPI OTPs. Guessing is kept impractical by the
+// customer having to be logged in as the trip's own customer, plus the per-client rate limit on the
+// start/end endpoints (routes/portalRoutes.js).
 export const OTP_LENGTH = 6;
-export const OTP_TTL_MINUTES = Number(process.env.TRIP_OTP_TTL_MINUTES) || 30;
-export const OTP_MAX_ATTEMPTS = 5;
+
+// Which codes a trip in each status still needs.
+const PURPOSES_BY_STATUS = {
+  'Yet to Start': ['start', 'end'],
+  'On Trip': ['end'],
+};
 
 function randomCode() {
   return String(crypto.randomInt(0, 10 ** OTP_LENGTH)).padStart(OTP_LENGTH, '0');
@@ -24,32 +32,20 @@ function isWeak(code) {
   return steps.every((s) => s === 1) || steps.every((s) => s === -1);
 }
 
-function expireStale(now = new Date()) {
-  return TripOtp.updateMany({ active: true, expiresAt: { $lt: now } }, { $set: { active: false } });
-}
-
-// Issues a fresh OTP for one step of a trip, replacing any code still live for that step. Every new
-// code is different from every code this trip has ever had (so a regenerated code is always a new
-// one, and the start and end codes never match), and from every other trip's live code — the partial
-// unique index on TripOtp.code is the final guarantee for the latter.
-export async function issueTripOtp(tripId, purpose, generatedBy = '') {
-  const now = new Date();
-  await expireStale(now);
+// Creates the code for one step of a trip, unless the trip already has a live one for that step. The
+// start and end codes of a trip are always different, and no two live codes anywhere are the same (the
+// partial unique index on TripOtp.code is the final guarantee for that).
+async function issueTripOtp(tripId, purpose, generatedBy) {
+  const live = await TripOtp.findOne({ trip: tripId, purpose, active: true });
+  if (live) return live;
   const usedForTrip = new Set(await TripOtp.distinct('code', { trip: tripId }));
-  await TripOtp.updateMany({ trip: tripId, purpose, active: true }, { $set: { active: false } });
 
   for (let attempt = 0; attempt < 20; attempt++) {
     const code = randomCode();
     if (isWeak(code) || usedForTrip.has(code)) continue;
     try {
       // eslint-disable-next-line no-await-in-loop
-      return await TripOtp.create({
-        trip: tripId,
-        purpose,
-        code,
-        expiresAt: new Date(now.getTime() + OTP_TTL_MINUTES * 60 * 1000),
-        generatedBy,
-      });
+      return await TripOtp.create({ trip: tripId, purpose, code, generatedBy });
     } catch (err) {
       if (err?.code === 11000) continue; // another trip holds this code right now — pick another
       throw err;
@@ -58,27 +54,29 @@ export async function issueTripOtp(tripId, purpose, generatedBy = '') {
   throw new Error('Could not generate a unique OTP, please try again');
 }
 
-// The live start/end OTPs for a trip, for the admin portal only.
+// Makes sure a trip has the codes its status needs: start + end while Yet to Start, end while On Trip.
+// Called when a trip is created, and when an admin opens a trip (so trips created before static codes
+// existed get theirs too).
+export async function ensureTripOtps(trip, generatedBy = 'system') {
+  for (const purpose of PURPOSES_BY_STATUS[trip.status] || []) {
+    // Sequential: the second code must differ from the first.
+    // eslint-disable-next-line no-await-in-loop
+    await issueTripOtp(trip._id, purpose, generatedBy);
+  }
+}
+
+// The live start/end codes of a trip, for the admin portal only (never sent to the customer site).
 export async function activeTripOtps(tripId) {
-  await expireStale();
-  const rows = await TripOtp.find({ trip: tripId, active: true }).sort({ createdAt: -1 }).lean();
+  const rows = await TripOtp.find({ trip: tripId, active: true }).sort({ createdAt: 1 }).lean();
   const result = { start: null, end: null };
   for (const row of rows) {
-    if (!result[row.purpose]) {
-      result[row.purpose] = {
-        code: row.code,
-        expiresAt: row.expiresAt,
-        generatedAt: row.createdAt,
-        generatedBy: row.generatedBy,
-        attemptsLeft: Math.max(OTP_MAX_ATTEMPTS - row.attempts, 0),
-      };
-    }
+    if (!result[row.purpose]) result[row.purpose] = { code: row.code, generatedAt: row.createdAt };
   }
   return result;
 }
 
-// Retires any live OTPs for these steps of a trip — e.g. once an admin has started the trip from the
-// admin portal, its start OTP must not work any more.
+// Retires the codes for these steps — e.g. the start code once the trip has started, both once it's
+// completed or cancelled.
 export function retireTripOtps(tripId, purposes) {
   return TripOtp.updateMany({ trip: tripId, purpose: { $in: purposes }, active: true }, { $set: { active: false } });
 }
@@ -89,31 +87,20 @@ function sameCode(a, b) {
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
-// Checks a code the customer entered and, if it's right, uses it up (atomically, so the same code
-// can't be used twice). Wrong guesses count against the code; after OTP_MAX_ATTEMPTS it stops
-// working and the admin has to generate a new one.
-// Returns { ok: true } or { ok: false, message }.
+// Checks the code the customer entered and, if it's right, uses it up (atomically, so the same code
+// can't be used twice). Returns { ok: true } or { ok: false, message }.
 export async function consumeTripOtp(tripId, purpose, code) {
-  const now = new Date();
   const otp = await TripOtp.findOne({ trip: tripId, purpose, active: true });
-  if (!otp || otp.expiresAt < now) {
-    if (otp) await TripOtp.updateOne({ _id: otp._id }, { $set: { active: false } });
-    return { ok: false, message: 'There is no valid OTP for this trip right now. Please ask our team to share a new one.' };
+  if (!otp) {
+    return { ok: false, message: 'There is no OTP for this step of your trip. Please contact our team.' };
   }
-
   if (!sameCode(otp.code, code)) {
-    const updated = await TripOtp.findOneAndUpdate({ _id: otp._id, active: true }, { $inc: { attempts: 1 } }, { new: true });
-    const left = OTP_MAX_ATTEMPTS - (updated?.attempts ?? OTP_MAX_ATTEMPTS);
-    if (left <= 0) {
-      await TripOtp.updateOne({ _id: otp._id }, { $set: { active: false } });
-      return { ok: false, message: 'Too many incorrect attempts. Please ask our team to share a new OTP.' };
-    }
-    return { ok: false, message: `Incorrect OTP. ${left} attempt${left === 1 ? '' : 's'} left.` };
+    await TripOtp.updateOne({ _id: otp._id }, { $inc: { attempts: 1 } });
+    return { ok: false, message: 'Incorrect OTP. Please check the code our team shared and try again.' };
   }
-
-  const used = await TripOtp.findOneAndUpdate({ _id: otp._id, active: true }, { $set: { active: false, usedAt: now } });
+  const used = await TripOtp.findOneAndUpdate({ _id: otp._id, active: true }, { $set: { active: false, usedAt: new Date() } });
   if (!used) {
-    return { ok: false, message: 'This OTP has already been used. Please ask our team to share a new one.' };
+    return { ok: false, message: 'This OTP has already been used.' };
   }
   return { ok: true };
 }

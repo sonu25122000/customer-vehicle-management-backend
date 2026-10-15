@@ -1,13 +1,13 @@
 import crypto from 'crypto';
 import { body, query, validationResult } from 'express-validator';
 import mongoose from 'mongoose';
-import Trip from '../models/Trip.js';
+import Trip, { TRIP_SOURCES } from '../models/Trip.js';
 import Customer from '../models/Customer.js';
 import Vehicle from '../models/Vehicle.js';
 import Coupon from '../models/Coupon.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { applicableCouponFilter, calculateDiscount } from '../utils/couponRules.js';
-import { issueTripOtp, activeTripOtps, retireTripOtps } from '../utils/tripOtp.js';
+import { ensureTripOtps, activeTripOtps, retireTripOtps } from '../utils/tripOtp.js';
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -62,15 +62,16 @@ const EDITABLE_FIELDS_BY_STATUS = {
   // Customer is never editable once a trip exists — only settable at creation time (see
   // createTrip). Only vehicle/start date+time can still change while "Yet to Start".
   'Yet to Start': [
-    'vehicle', 'startDate', 'startTime', 'endDate', 'endTime',
+    'vehicle', 'source', 'startDate', 'startTime', 'endDate', 'endTime',
     ...AMOUNT_FIELDS, 'startOdometer', 'endOdometer', 'status',
   ],
   // Vehicle/customer/start date+time are locked once a trip is under way — see checkVehicleRentals's
   // "Trip lifecycle" rules. Reschedule (POST /:id/reschedule) is the only way to change start date/time.
-  'On Trip': ['endDate', 'endTime', ...AMOUNT_FIELDS, 'startOdometer', 'endOdometer', 'status', 'rating'],
-  // Amount-related fields, odometer readings and rating remain editable after completion — e.g.
-  // correcting the final odometer reading once the vehicle is back.
-  Completed: [...AMOUNT_FIELDS, 'startOdometer', 'endOdometer', 'rating'],
+  'On Trip': ['source', 'endDate', 'endTime', ...AMOUNT_FIELDS, 'startOdometer', 'endOdometer', 'status'],
+  // Amount-related fields and odometer readings remain editable after completion — e.g. correcting the
+  // final odometer reading once the vehicle is back. The rating is the customer's alone
+  // (portalController.rateTrip), so it isn't editable here.
+  Completed: ['source', ...AMOUNT_FIELDS, 'startOdometer', 'endOdometer'],
   // Cancellation is a one-shot action (see cancelTrip) — no further edits after that.
   Cancelled: [],
 };
@@ -83,6 +84,7 @@ export const listValidators = [
   query('limit').optional().isInt({ min: 1, max: 100 }).toInt(),
   query('status').optional({ checkFalsy: true }).isIn(STATUSES),
   query('minRating').optional({ checkFalsy: true }).isInt({ min: 1, max: 5 }).toInt(),
+  query('source').optional({ checkFalsy: true }).isIn(TRIP_SOURCES),
   query('startDate').optional({ checkFalsy: true }).isISO8601(),
   query('endDate').optional({ checkFalsy: true }).isISO8601(),
 ];
@@ -113,7 +115,7 @@ export const tripValidators = [
   // trip is Yet to Start or On Trip (see updateTrip).
   body('coupon').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid coupon selected'),
   body('status').trim().notEmpty().withMessage('Trip status is required').isIn(STATUSES).withMessage('Invalid trip status'),
-  body('rating').optional({ checkFalsy: true }).isInt({ min: 1, max: 5 }).withMessage('Rating must be between 1 and 5'),
+  body('source').trim().notEmpty().withMessage('Booking source is required').isIn(TRIP_SOURCES).withMessage('Booking source must be Direct or Zoomcar'),
 ];
 
 export const rescheduleValidators = [
@@ -181,9 +183,10 @@ async function assertVehicleTripAvailable(vehicleId, status, excludeTripId) {
   return clash ? 'This vehicle is already on another active trip' : null;
 }
 
-async function buildFilter({ search, status, minRating, startDate, endDate, vehicleId, customerId }) {
+async function buildFilter({ search, status, minRating, source, startDate, endDate, vehicleId, customerId }) {
   const filter = { isDeleted: false };
 
+  if (source) filter.source = source;
   if (minRating) filter.rating = { $gte: minRating };
   if (search) {
     const regex = new RegExp(escapeRegex(search.trim()), 'i');
@@ -223,6 +226,7 @@ export const listTrips = asyncHandler(async (req, res) => {
     search: req.query.search,
     status: req.query.status,
     minRating: req.query.minRating,
+    source: req.query.source,
     startDate: req.query.startDate,
     endDate: req.query.endDate,
     vehicleId: req.query.vehicleId,
@@ -250,39 +254,15 @@ export const listTrips = asyncHandler(async (req, res) => {
   });
 });
 
-// GET /api/trips/:id — includes the trip's live start/end OTPs (admin portal only; the customer site
-// never receives them).
+// GET /api/trips/:id — includes the trip's start/end OTPs (admin portal only; the customer site never
+// receives them). Trips created before every trip got its codes at creation get them here.
 export const getTrip = asyncHandler(async (req, res) => {
   const trip = await Trip.findById(req.params.id).populate('customer', CUSTOMER_POPULATE).populate('vehicle', VEHICLE_POPULATE);
   if (!trip) {
     return res.status(404).json({ message: 'Trip not found' });
   }
+  if (!trip.isDeleted) await ensureTripOtps(trip);
   res.status(200).json({ data: { ...trip.toObject(), otps: await activeTripOtps(trip._id) } });
-});
-
-export const otpValidators = [body('purpose').isIn(['start', 'end']).withMessage("Purpose must be 'start' or 'end'")];
-
-// POST /api/trips/:id/otp { purpose: 'start'|'end' } — generates a new OTP for the customer to start
-// (while Yet to Start) or end (while On Trip) the trip on the customer site. Every call gives a new
-// code and the previous one for that step stops working (utils/tripOtp.js). Admins don't need an OTP
-// to start or end a trip themselves — they just change its status.
-export const generateTripOtp = asyncHandler(async (req, res) => {
-  if (!handleValidation(req, res)) return;
-
-  const trip = await Trip.findOne({ _id: req.params.id, isDeleted: false });
-  if (!trip) {
-    return res.status(404).json({ message: 'Trip not found' });
-  }
-  const { purpose } = req.body;
-  const neededStatus = purpose === 'start' ? 'Yet to Start' : 'On Trip';
-  if (trip.status !== neededStatus) {
-    return res.status(400).json({
-      message: `A ${purpose} OTP can only be generated while the trip is "${neededStatus}" (it is "${trip.status}")`,
-    });
-  }
-
-  await issueTripOtp(trip._id, purpose, req.admin?.username);
-  res.status(201).json({ data: await activeTripOtps(trip._id), message: `New ${purpose} OTP generated` });
 });
 
 async function assertRefsActive(customerId, vehicleId) {
@@ -326,7 +306,7 @@ export const createTrip = asyncHandler(async (req, res) => {
   // client, so there's no way to create a trip that's already On Trip/Completed/Cancelled.
   const {
     customer, vehicle, startDate, startTime, endDate, endTime,
-    amount, tollCharges, advance, securityDeposit, startOdometer, endOdometer,
+    amount, tollCharges, advance, securityDeposit, startOdometer, endOdometer, source,
   } = req.body;
 
   const baseDoc = {
@@ -344,8 +324,9 @@ export const createTrip = asyncHandler(async (req, res) => {
     endOdometer: endOdometer === '' ? undefined : endOdometer,
     status: 'Yet to Start',
     createdBy: 'admin',
+    source,
     ...(couponDoc ?{ coupon: couponDoc._id, couponCode: couponDoc.code, couponDiscount } : {}),
-    // rating only ever applies to a Completed trip — never accepted at creation time.
+    // The rating is the customer's, given on the customer site after the trip — never set here.
     // bookedDate is intentionally never taken from req.body — always "now" at creation.
   };
 
@@ -384,6 +365,8 @@ export const createTrip = asyncHandler(async (req, res) => {
     if (couponReserved) await Coupon.updateOne({ _id: couponDoc._id }, { $inc: { usageCount: -1 } });
     throw err;
   }
+  // The trip's start and end OTPs exist from the moment it's created (utils/tripOtp.js).
+  await ensureTripOtps(trip, req.admin?.username || 'system');
   await trip.populate([{ path: 'customer', select: CUSTOMER_POPULATE }, { path: 'vehicle', select: VEHICLE_POPULATE }]);
 
   res.status(201).json({ data: trip, message: 'Trip created successfully' });
@@ -393,13 +376,13 @@ export const createTrip = asyncHandler(async (req, res) => {
 //
 // Trip lifecycle rules (see the 20-item spec this implements):
 //  - Cancelled trips are frozen — no further edits at all.
-//  - Completed trips only allow amount-related fields + rating to change.
+//  - Completed trips only allow amount-related fields, odometer readings and booking source to change.
 //  - On Trip locks customer/vehicle/start date+time (reschedule is the only way to change
 //    start date/time once under way) and tracks every end date/time change in endDateHistory.
 //  - Transitioning TO Cancelled (from Yet to Start or On Trip) only accepts status +
 //    refundAmount — every other field keeps its existing value, amount is zeroed (due = 0),
 //    and refundAmount is capped at the trip's amount as it stood before cancellation.
-//  - Rating can only ever be set once the resulting status is Completed.
+//  - The rating is never set here — it's the customer's (portalController.rateTrip).
 export const updateTrip = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
@@ -444,8 +427,8 @@ export const updateTrip = asyncHandler(async (req, res) => {
   // once past "Yet to Start", and Completed only ever lets amount fields + rating move). ---
   const editableFields = EDITABLE_FIELDS_BY_STATUS[existing.status] || [];
   const ALL_TRIP_FIELDS = [
-    'customer', 'vehicle', 'startDate', 'startTime', 'endDate', 'endTime',
-    ...AMOUNT_FIELDS, 'startOdometer', 'endOdometer', 'rating',
+    'customer', 'vehicle', 'source', 'startDate', 'startTime', 'endDate', 'endTime',
+    ...AMOUNT_FIELDS, 'startOdometer', 'endOdometer',
   ];
   const next = {};
   for (const field of ALL_TRIP_FIELDS) {
@@ -525,9 +508,6 @@ export const updateTrip = asyncHandler(async (req, res) => {
     }
   }
 
-  // Rating only ever applies once the trip is Completed.
-  existing.rating = requestedStatus === 'Completed' && next.rating ? next.rating : existing.rating;
-
   // Track every end date/time change made while a trip is On Trip (task: end date update history).
   if (existing.status === 'On Trip') {
     const newEndDate = next.endDate || undefined;
@@ -547,6 +527,7 @@ export const updateTrip = asyncHandler(async (req, res) => {
 
   existing.customer = next.customer;
   existing.vehicle = next.vehicle;
+  existing.source = next.source || 'Direct';
   existing.startDate = next.startDate;
   existing.startTime = next.startTime;
   existing.endDate = next.endDate || undefined;

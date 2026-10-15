@@ -3,10 +3,10 @@ import mongoose from 'mongoose';
 import Vehicle from '../models/Vehicle.js';
 import Trip from '../models/Trip.js';
 import VehicleCatalog from '../models/VehicleCatalog.js';
-import VehiclePhoto, { MAIN_PHOTO_SLOTS } from '../models/VehiclePhoto.js';
+import VehiclePhoto from '../models/VehiclePhoto.js';
 import VehicleDocument from '../models/VehicleDocument.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { vehicleMediaSummary } from '../utils/media.js';
+import { vehicleMediaSummary, missingForActive } from '../utils/media.js';
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -189,7 +189,7 @@ function tripStatsStages() {
         let: { vehicleId: '$_id' },
         pipeline: [
           { $match: { $expr: { $and: [{ $eq: ['$vehicle', '$$vehicleId'] }, { $eq: ['$isDeleted', false] }] } } },
-          { $project: { status: 1, rating: 1, customerRating: 1 } },
+          { $project: { status: 1, rating: 1 } },
         ],
         as: 'vehicleTrips',
       },
@@ -202,16 +202,13 @@ function tripStatsStages() {
         // Rating is always 1-5 when set — checking membership avoids the missing-vs-null
         // ambiguity that $ne: [field, null] doesn't reliably resolve for absent fields.
         ratedTrips: { $filter: { input: '$vehicleTrips', cond: { $in: ['$$this.rating', [1, 2, 3, 4, 5]] } } },
-        customerRatedTrips: { $filter: { input: '$vehicleTrips', cond: { $in: ['$$this.customerRating', [1, 2, 3, 4, 5]] } } },
       },
     },
     {
       $addFields: {
         ratingsGiven: { $size: '$ratedTrips' },
+        // The customers' ratings, given on the customer site after a Completed trip — one per trip.
         avgRating: { $ifNull: [{ $round: [{ $avg: '$ratedTrips.rating' }, 1] }, 0] },
-        // Customers' own ratings of the vehicle, given on the customer site after a Completed trip.
-        customerRatingsGiven: { $size: '$customerRatedTrips' },
-        customerAvgRating: { $ifNull: [{ $round: [{ $avg: '$customerRatedTrips.customerRating' }, 1] }, 0] },
       },
     },
   ];
@@ -300,8 +297,6 @@ export const listVehicles = asyncHandler(async (req, res) => {
           tripsCompleted: 1,
           ratingsGiven: 1,
           avgRating: 1,
-          customerRatingsGiven: 1,
-          customerAvgRating: 1,
           photoCount: 1,
           documentCount: 1,
         },
@@ -367,7 +362,7 @@ export const getVehicle = asyncHandler(async (req, res) => {
     Vehicle.aggregate([
       { $match: { _id: vehicle._id } },
       ...tripStatsStages(),
-      { $project: { tripsCompleted: 1, ratingsGiven: 1, avgRating: 1, customerRatingsGiven: 1, customerAvgRating: 1 } },
+      { $project: { tripsCompleted: 1, ratingsGiven: 1, avgRating: 1 } },
     ]),
     vehicleMediaSummary(vehicle._id),
   ]);
@@ -379,8 +374,6 @@ export const getVehicle = asyncHandler(async (req, res) => {
       tripsCompleted: stats?.tripsCompleted || 0,
       ratingsGiven: stats?.ratingsGiven || 0,
       avgRating: stats?.avgRating || 0,
-      customerRatingsGiven: stats?.customerRatingsGiven || 0,
-      customerAvgRating: stats?.customerAvgRating || 0,
     },
   });
 });
@@ -391,11 +384,13 @@ async function findDuplicate(vehicleNo, excludeId) {
   return Vehicle.findOne(filter);
 }
 
-// A vehicle can only go Active once all 4 photo sides are on file — a freshly created vehicle
-// never has any yet, so it can never be created Active either.
-async function hasAllPhotoSides(vehicleId) {
-  const slots = await VehiclePhoto.distinct('slot', { vehicle: vehicleId, isDeleted: false });
-  return MAIN_PHOTO_SLOTS.every((slot) => slots.includes(slot));
+// A vehicle can only go Active once all 4 photo sides, the RC and the insurance are on file
+// (utils/media.js missingForActive) — a freshly created vehicle never has any yet, so it can never be
+// created Active either. Returns the error message, or null when the status change is fine.
+async function activationProblem(vehicleId, nextStatus) {
+  if (nextStatus !== 'Active') return null;
+  const missing = await missingForActive(vehicleId);
+  return missing.length ? `Upload the ${missing.join(', ')} before setting the vehicle to Active` : null;
 }
 
 // POST /api/vehicles
@@ -445,12 +440,11 @@ export const updateVehicle = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Vehicle not found' });
   }
 
-  const nextStatus = status || 'On Hold';
-  if (nextStatus === 'Active' && !(await hasAllPhotoSides(vehicle._id))) {
-    return res.status(400).json({
-      message: 'Upload all 4 vehicle photos (front, back, passenger side, driver side) before setting status to Active',
-    });
-  }
+  // Status is optional here — the admin portal changes it through PATCH /:id/status; without one the
+  // vehicle keeps its current status.
+  const nextStatus = status || vehicle.status || 'On Hold';
+  const statusError = await activationProblem(vehicle._id, nextStatus);
+  if (statusError) return res.status(400).json({ message: statusError });
 
   vehicle.set({
     vehicleNo,
@@ -471,6 +465,29 @@ export const updateVehicle = asyncHandler(async (req, res) => {
   res.status(200).json({
     data: { ...vehicle.toObject(), ...(await vehicleMediaSummary(vehicle._id)) },
     message: 'Vehicle updated successfully',
+  });
+});
+
+export const statusValidators = [body('status').isIn(VEHICLE_STATUSES).withMessage('Invalid vehicle status')];
+
+// PATCH /api/vehicles/:id/status { status } — changes only the vehicle's status. Active needs all 4
+// photo sides, the RC and the insurance on file. (Removing one of those from an Active vehicle puts it
+// On Hold automatically — see the photo/document delete endpoints.)
+export const updateVehicleStatus = asyncHandler(async (req, res) => {
+  if (!handleValidation(req, res)) return;
+
+  const vehicle = await Vehicle.findOne({ _id: req.params.id, isDeleted: false });
+  if (!vehicle) {
+    return res.status(404).json({ message: 'Vehicle not found' });
+  }
+  const statusError = await activationProblem(vehicle._id, req.body.status);
+  if (statusError) return res.status(400).json({ message: statusError });
+
+  vehicle.status = req.body.status;
+  await vehicle.save();
+  res.status(200).json({
+    data: { ...vehicle.toObject(), ...(await vehicleMediaSummary(vehicle._id)) },
+    message: `Vehicle is now ${vehicle.status}`,
   });
 });
 

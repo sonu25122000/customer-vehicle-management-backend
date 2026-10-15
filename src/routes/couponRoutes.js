@@ -39,13 +39,14 @@ router.use(requireAuth, requireRole('moderator', 'admin'));
  *     description: >
  *       Returns only coupons that are usable right now for this customer — active, inside their
  *       start/expiry window, not used up (usageCount < maxUsage), and either applicable to all
- *       customers or listing this customer. Used by the Create Trip form's Coupon dropdown.
+ *       customers or listing this customer. Without a customer, the coupons applicable to all
+ *       customers. Public/private doesn't matter here. Used by the Create Trip form's Coupon dropdown.
  *     parameters:
  *       - in: query
  *         name: customer
- *         required: true
+ *         required: false
  *         schema: { type: string }
- *         description: Customer ObjectId
+ *         description: Customer ObjectId (optional)
  *     responses:
  *       200:
  *         description: Applicable coupons

@@ -22,16 +22,32 @@ const hasUsageLeft = {
 
 // Mongo filter for a coupon that can be applied to `customerId` at `now` (optionally narrowed to
 // one coupon id). Used both to list the coupons the trip form offers and to atomically redeem one.
+// Without a customer, only coupons open to all customers match.
 export function applicableCouponFilter(customerId, now = new Date(), couponId) {
+  const audience = customerId ? [{ applicability: 'all' }, { applicability: 'selected', customers: customerId }] : [{ applicability: 'all' }];
   const filter = {
     isDeleted: false,
     isActive: true,
     startAt: { $lte: now },
     expiresAt: { $gte: now },
-    $and: [hasUsageLeft, { $or: [{ applicability: 'all' }, { applicability: 'selected', customers: customerId }] }],
+    $and: [hasUsageLeft, { $or: audience }],
   };
   if (couponId) filter._id = couponId;
   return filter;
+}
+
+// Why a typed-in coupon code can't be used right now, or null if it can. Checked one rule at a time
+// so the customer gets a specific reason instead of a generic "invalid coupon".
+export async function couponCodeProblem(code, customerId, now = new Date()) {
+  const coupon = await Coupon.findOne({ code: String(code || '').trim().toUpperCase(), isDeleted: false });
+  if (!coupon) return { message: 'This coupon code is not valid' };
+  if (coupon.applicability === 'selected' && !coupon.customers.some((id) => String(id) === String(customerId))) {
+    return { message: 'This coupon is not valid for your account' };
+  }
+  if (coupon.startAt > now) return { message: 'This coupon is not active yet' };
+  if (coupon.expiresAt < now || !coupon.isActive) return { message: 'This coupon has expired or is no longer active' };
+  if (coupon.maxUsage && coupon.usageCount >= coupon.maxUsage) return { message: 'This coupon has reached its usage limit' };
+  return { coupon };
 }
 
 // Flips every coupon that is still marked active but whose expiry has passed to inactive. Run at the

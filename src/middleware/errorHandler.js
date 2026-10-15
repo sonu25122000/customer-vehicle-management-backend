@@ -23,6 +23,6 @@ export function errorHandler(err, req, res, next) {
   // Unexpected (5xx) errors get a generic message in production so internal details
   // (library errors, file paths, etc.) never reach the client — only intentional 4xx
   // errors carry their own message through.
-  const exposeMessage = status < 500 || process.env.NODE_ENV !== 'production';
+  const exposeMessage = status < 500 || err.expose || process.env.NODE_ENV !== 'production';
   res.status(status).json({ message: exposeMessage ? err.message || 'Internal server error' : 'Internal server error' });
 }

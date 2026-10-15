@@ -20,11 +20,11 @@ const vehiclePhotoSchema = new mongoose.Schema(
       enum: PHOTO_SLOTS,
       required: [true, 'Photo slot is required'],
     },
-    // base64 data URI.
-    image: {
-      type: String,
-      required: true,
-    },
+    // The file's object key in the S3 bucket (utils/storage.js). `image` is legacy: files uploaded before
+    // S3 was introduced were stored here as a base64 data URI. It's never written any more, and
+    // `npm run migrate:s3` moves those files into S3 and clears it.
+    s3Key: { type: String },
+    image: { type: String },
     mimeType: { type: String, default: '' },
     size: { type: Number, default: 0 },
     isDeleted: {
@@ -34,6 +34,11 @@ const vehiclePhotoSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+vehiclePhotoSchema.pre('validate', function requireFile(next) {
+  if (!this.s3Key && !this.image) this.invalidate('image', 'File is required');
+  next();
+});
 
 vehiclePhotoSchema.index({ vehicle: 1, isDeleted: 1, slot: 1 });
 

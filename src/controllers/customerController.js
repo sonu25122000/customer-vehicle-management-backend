@@ -1,10 +1,11 @@
+import bcrypt from 'bcryptjs';
 import { body, query, validationResult } from 'express-validator';
 import mongoose from 'mongoose';
 import Customer from '../models/Customer.js';
 import Trip from '../models/Trip.js';
-import CustomerDocument from '../models/CustomerDocument.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { documentTypesByCustomer } from '../utils/media.js';
+import { documentSummaryByCustomer } from '../utils/media.js';
+import { recordCustomerHistory, listCustomerHistory } from '../utils/customerHistory.js';
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -18,7 +19,6 @@ const SORT_MAP = {
 };
 
 const CUSTOMER_TYPES = ['VIP', 'Good', 'Bad'];
-const PROFILE_VERIFIED_STATUSES = ['Accepted', 'Rejected', 'Pending'];
 const MAX_NOTES_WORDS = 300;
 
 const dateRangeValidators = [
@@ -82,26 +82,29 @@ function buildFilter({ search, minRating, startDate, endDate, customerIds }) {
 //    date for each customer.
 //  - documentTypes: which verification documents are on file (e.g. ['selfie', 'aadhaar']). The files
 //    themselves live in the CustomerDocument collection and are fetched from /api/customer-documents.
+//  - documentStatuses: each document's own review status (e.g. { selfie: 'Approved', aadhaar: 'Pending' }).
 async function attachDerivedFields(customers) {
   const ids = customers.map((c) => c._id);
   if (!ids.length) return customers;
 
-  const [rows, documentTypes] = await Promise.all([
+  const [rows, documents] = await Promise.all([
     Trip.aggregate([
       { $match: { customer: { $in: ids }, isDeleted: false } },
       { $sort: { startDate: -1 } },
       { $group: { _id: '$customer', lastBookedDate: { $first: '$startDate' } } },
     ]),
-    documentTypesByCustomer(ids),
+    documentSummaryByCustomer(ids),
   ]);
   const byId = new Map(rows.map((r) => [String(r._id), r.lastBookedDate]));
 
   return customers.map((c) => {
     const obj = c.toObject ? c.toObject() : c;
+    const docs = documents.get(String(c._id));
     return {
       ...obj,
       lastBookedDate: byId.get(String(c._id)) || null,
-      documentTypes: documentTypes.get(String(c._id)) || [],
+      documentTypes: docs?.types || [],
+      documentStatuses: docs?.statuses || {},
     };
   });
 }
@@ -117,6 +120,16 @@ export const listValidators = [
 
 export const statsValidators = [customerIdsValidator, ...dateRangeValidators];
 
+const mobile1Validator = body('mobile1')
+  .trim()
+  .notEmpty()
+  .withMessage('Mobile 1 is required')
+  .matches(/^[0-9]{10}$/)
+  .withMessage('Mobile 1 must be exactly 10 digits');
+
+// Shared by create and update. Mobile 1 is only validated on create: it's the customer's login on the
+// customer site, so once set it can't be changed (updateCustomer rejects a different one).
+// profileVerified isn't accepted at all — it's derived from the documents' reviews (utils/verification.js).
 export const customerValidators = [
   body('name')
     .trim()
@@ -124,12 +137,6 @@ export const customerValidators = [
     .withMessage('Name is required')
     .isLength({ max: 50 })
     .withMessage('Name cannot exceed 50 characters'),
-  body('mobile1')
-    .trim()
-    .notEmpty()
-    .withMessage('Mobile 1 is required')
-    .matches(/^[0-9]{10}$/)
-    .withMessage('Mobile 1 must be exactly 10 digits'),
   body('mobile2')
     .optional({ checkFalsy: true })
     .trim()
@@ -140,11 +147,26 @@ export const customerValidators = [
     .isInt({ min: 1, max: 5 })
     .withMessage('Rating must be between 1 and 5'),
   body('customerType').optional({ checkFalsy: true }).isIn(CUSTOMER_TYPES).withMessage('Invalid customer type'),
-  body('profileVerified')
-    .optional({ checkFalsy: true })
-    .isIn(PROFILE_VERIFIED_STATUSES)
-    .withMessage('Invalid profile verified status'),
   notesValidator,
+];
+
+// The customer's customer-site login password (they log in with mobile1 + this). Same 6-character
+// minimum as self-signup (portalAuthController). Required when an admin creates a customer;
+// optional on update, where it resets the password.
+const MIN_PASSWORD_LENGTH = 6;
+const passwordLengthCheck = (chain) =>
+  chain.isLength({ min: MIN_PASSWORD_LENGTH }).withMessage(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+
+export const createCustomerValidators = [
+  ...customerValidators,
+  mobile1Validator,
+  passwordLengthCheck(body('password').notEmpty().withMessage('Password is required').bail()),
+];
+
+export const updateCustomerValidators = [
+  ...customerValidators,
+  body('mobile1').optional({ checkFalsy: true }).trim(),
+  passwordLengthCheck(body('password').optional({ checkFalsy: true })),
 ];
 
 function handleValidation(req, res) {
@@ -217,6 +239,8 @@ export const createCustomer = asyncHandler(async (req, res) => {
   // A brand new customer can't be rated yet and always starts out unverified — rating and
   // profileVerified are never accepted from the client at creation time (see CustomerFormModal,
   // which disables both controls on the create form for the same reason).
+  // The password is only a temporary one the admin passes on: the customer has to set their own on
+  // their first customer-site login (mustChangePassword).
   const customer = await Customer.create({
     name,
     mobile1,
@@ -224,6 +248,9 @@ export const createCustomer = asyncHandler(async (req, res) => {
     notes,
     customerType: customerType || undefined,
     profileVerified: 'Pending',
+    createdBy: 'admin',
+    passwordHash: await bcrypt.hash(req.body.password, 10),
+    mustChangePassword: true,
   });
 
   const [withDerived] = await attachDerivedFields([customer]);
@@ -234,43 +261,32 @@ export const createCustomer = asyncHandler(async (req, res) => {
 export const updateCustomer = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { name, mobile1, mobile2, rating, notes, customerType, profileVerified } = req.body;
+  const { name, mobile1, mobile2, rating, notes, customerType } = req.body;
 
-  const duplicateMobile = await Customer.findOne({
-    _id: { $ne: req.params.id },
-    mobile1: mobile1.trim(),
-    isDeleted: false,
-  });
-  if (duplicateMobile) {
-    return res.status(409).json({ message: 'A customer with this mobile number already exists' });
+  const existing = await Customer.findOne({ _id: req.params.id, isDeleted: false });
+  if (!existing) {
+    return res.status(404).json({ message: 'Customer not found' });
   }
 
-  // Profile status can only move to Accepted once selfie, driving licence and Aadhaar are all
-  // on file — a trip still can't be started until this profile is Accepted either (see
-  // tripController.updateTrip's "On Trip" check).
-  if (profileVerified === 'Accepted') {
-    const existing = await Customer.findOne({ _id: req.params.id, isDeleted: false }, '_id');
-    if (!existing) {
-      return res.status(404).json({ message: 'Customer not found' });
-    }
-    const types = await CustomerDocument.distinct('type', { customer: existing._id, isDeleted: false });
-    if (!['selfie', 'drivingLicence', 'aadhaar'].every((type) => types.includes(type))) {
-      return res.status(400).json({
-        message: 'Upload the selfie, driving licence and Aadhaar before accepting this profile',
-      });
-    }
+  // Mobile 1 is the customer's login and can't be changed once the customer exists.
+  if (mobile1 && mobile1 !== existing.mobile1) {
+    return res.status(400).json({ message: "The mobile number can't be changed — it is the customer's login" });
   }
 
+  // profileVerified is never set here: it follows the individual document reviews
+  // (POST /api/customer-documents/review), and a trip still can't be started until it's Accepted
+  // (see tripController.updateTrip's "On Trip" check).
   const customer = await Customer.findOneAndUpdate(
     { _id: req.params.id, isDeleted: false },
     {
       name,
-      mobile1,
       mobile2,
       rating: rating || undefined,
       notes,
       customerType: customerType || undefined,
-      profileVerified: profileVerified || undefined,
+      // Optional password reset — left untouched when no password is sent. Like a new customer's
+      // first password, a reset one is temporary: the customer must choose their own at next login.
+      ...(req.body.password ? { passwordHash: await bcrypt.hash(req.body.password, 10), mustChangePassword: true } : {}),
     },
     { new: true, runValidators: true }
   );
@@ -279,8 +295,26 @@ export const updateCustomer = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Customer not found' });
   }
 
+  // A reset is noted in the edit history, never the password itself.
+  await recordCustomerHistory(
+    existing,
+    customer,
+    'admin',
+    req.admin?.username,
+    req.body.password ? [{ field: 'password', from: '', to: 'Reset by admin' }] : []
+  );
+
   const [withDerived] = await attachDerivedFields([customer]);
   res.status(200).json({ data: withDerived, message: 'Customer updated successfully' });
+});
+
+// GET /api/customers/:id/history — every profile edit, newest first (by an admin here, or by the
+// customer on the customer site).
+export const getCustomerHistory = asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid identifier supplied' });
+  }
+  res.status(200).json({ data: await listCustomerHistory(req.params.id) });
 });
 
 // DELETE /api/customers/:id — soft delete

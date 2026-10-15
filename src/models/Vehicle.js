@@ -57,6 +57,12 @@ const vehicleSchema = new mongoose.Schema(
       required: [true, 'Year is required'],
       min: [1990, 'Year must be 1990 or later'],
     },
+    // Rental price per day (₹), shown on the customer site and used to work out the amount of a
+    // booking a customer makes there. Optional — a vehicle without one can't be booked online.
+    pricePerDay: {
+      type: Number,
+      min: [0, 'Price per day cannot be negative'],
+    },
     ownerName: {
       type: String,
       required: [true, 'Owner/Host name is required'],

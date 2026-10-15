@@ -4,8 +4,10 @@ import {
   getCustomerDocument,
   uploadCustomerDocuments,
   deleteCustomerDocument,
+  reviewCustomerDocuments,
   listValidators,
   uploadValidators,
+  reviewValidators,
 } from '../controllers/customerDocumentController.js';
 import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
 import { uploadCustomerDocuments as uploadCustomerDocumentsMiddleware, handleUploadErrors } from '../middleware/upload.js';
@@ -77,6 +79,39 @@ const canEdit = requireRole('moderator', 'admin');
  */
 router.get('/', listValidators, listCustomerDocuments);
 router.post('/', canEdit, uploadCustomerDocumentsMiddleware, handleUploadErrors, uploadValidators, uploadCustomerDocuments);
+
+/**
+ * @swagger
+ * /customer-documents/review:
+ *   post:
+ *     tags: [Customer Documents]
+ *     summary: Approve or reject documents (moderator/admin) — one, several, or the whole profile
+ *     description: >
+ *       Works the same for documents the customer uploaded on the customer site and ones an admin uploaded.
+ *       Leave out `documents` to review every document the customer has on file (the whole profile).
+ *       Rejecting needs a reason; the customer sees it and re-uploads just that document. The customer's
+ *       profileVerified is recomputed afterwards — Accepted only once selfie, driving licence and Aadhaar
+ *       are all Approved, Rejected while any of them is Rejected, Pending otherwise.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [customer, status]
+ *             properties:
+ *               customer: { type: string, description: Customer ObjectId }
+ *               status: { type: string, enum: [Approved, Rejected] }
+ *               documents: { type: array, items: { type: string }, description: Document ids (omit for all) }
+ *               reason: { type: string, maxLength: 300, description: Required when rejecting }
+ *     responses:
+ *       200: { description: Reviewed; returns the customer's documents and their new profileVerified }
+ *       400: { $ref: '#/components/responses/ValidationError' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ */
+router.post('/review', canEdit, reviewValidators, reviewCustomerDocuments);
 
 /**
  * @swagger

@@ -18,6 +18,7 @@ import couponRoutes from './routes/couponRoutes.js';
 import customerDocumentRoutes from './routes/customerDocumentRoutes.js';
 import vehiclePhotoRoutes from './routes/vehiclePhotoRoutes.js';
 import vehicleDocumentRoutes from './routes/vehicleDocumentRoutes.js';
+import portalRoutes from './routes/portalRoutes.js';
 import { notFound, errorHandler } from './middleware/errorHandler.js';
 import { requireAuth, requireRole } from './middleware/auth.js';
 import { buildTripId } from './controllers/tripController.js';
@@ -29,6 +30,8 @@ import Coupon from './models/Coupon.js';
 import CustomerDocument from './models/CustomerDocument.js';
 import VehiclePhoto from './models/VehiclePhoto.js';
 import VehicleDocument from './models/VehicleDocument.js';
+import CustomerHistory from './models/CustomerHistory.js';
+import TripOtp from './models/TripOtp.js';
 
 // Admin account is created manually (e.g. directly in the database) — not by this app.
 // If ADMIN_USERNAME/ADMIN_PASSWORD are set, this syncs an *existing* admin to match them
@@ -103,6 +106,8 @@ app.use('/api/coupons', couponRoutes);
 app.use('/api/customer-documents', customerDocumentRoutes);
 app.use('/api/vehicle-photos', vehiclePhotoRoutes);
 app.use('/api/vehicle-documents', vehicleDocumentRoutes);
+// Customer-facing site (separate frontend app) — has its own customer login, see routes/portalRoutes.js.
+app.use('/api/portal', portalRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
@@ -139,6 +144,17 @@ export function initialize() {
         // Accounts that predate the soft-delete/disable flag are all active.
         Admin.collection.updateMany({ isActive: { $exists: false } }, { $set: { isActive: true } }),
       ]);
+      // Every customer and trip that predates the createdBy field was added from the admin portal
+      // (the customer site didn't exist yet).
+      const [customerCreatedByBackfill, tripCreatedByBackfill] = await Promise.all([
+        Customer.collection.updateMany({ createdBy: { $exists: false } }, { $set: { createdBy: 'admin' } }),
+        Trip.collection.updateMany({ createdBy: { $exists: false } }, { $set: { createdBy: 'admin' } }),
+      ]);
+      if (customerCreatedByBackfill.modifiedCount || tripCreatedByBackfill.modifiedCount) {
+        console.log(
+          `Backfilled createdBy:'admin' on ${customerCreatedByBackfill.modifiedCount} customer(s), ${tripCreatedByBackfill.modifiedCount} trip(s)`
+        );
+      }
       if (adminActiveBackfill.modifiedCount) {
         console.log(`Backfilled isActive:true on ${adminActiveBackfill.modifiedCount} pre-existing account(s)`);
       }
@@ -149,6 +165,25 @@ export function initialize() {
       }
       if (adminRoleBackfill.modifiedCount) {
         console.log(`Backfilled role:'admin' on ${adminRoleBackfill.modifiedCount} pre-existing account(s)`);
+      }
+
+      // Documents uploaded before each one had its own review status: a customer whose profile an
+      // admin had already Accepted had all their documents checked, so those count as Approved; every
+      // other document waits for review. Only touches documents without a status, so it's a no-op
+      // after the first run.
+      const unreviewed = await CustomerDocument.countDocuments({ status: { $exists: false } });
+      if (unreviewed) {
+        const acceptedCustomers = await Customer.distinct('_id', { profileVerified: 'Accepted' });
+        // Sequential on purpose: the second update picks up whatever the first one didn't.
+        const approved = await CustomerDocument.collection.updateMany(
+          { status: { $exists: false }, customer: { $in: acceptedCustomers } },
+          { $set: { status: 'Approved', rejectionReason: '' } }
+        );
+        const pending = await CustomerDocument.collection.updateMany(
+          { status: { $exists: false } },
+          { $set: { status: 'Pending', rejectionReason: '' } }
+        );
+        console.log(`Backfilled document status: ${approved.modifiedCount} Approved, ${pending.modifiedCount} Pending`);
       }
 
       // Trip.tripId has a unique index (see models/Trip.js) — that index can't be created while
@@ -176,6 +211,8 @@ export function initialize() {
         CustomerDocument.syncIndexes(),
         VehiclePhoto.syncIndexes(),
         VehicleDocument.syncIndexes(),
+        CustomerHistory.syncIndexes(),
+        TripOtp.syncIndexes(),
       ]);
     })().catch((err) => {
       initPromise = null;

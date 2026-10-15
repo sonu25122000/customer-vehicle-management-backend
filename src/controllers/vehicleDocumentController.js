@@ -3,6 +3,7 @@ import Vehicle from '../models/Vehicle.js';
 import VehicleDocument, { VEHICLE_DOCUMENT_TYPES } from '../models/VehicleDocument.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { toDataUri } from '../utils/media.js';
+import { vehicleDocumentFileName } from '../utils/fileNames.js';
 
 const VEHICLE_POPULATE = 'vehicleNo make model';
 
@@ -47,7 +48,7 @@ export const getVehicleDocument = asyncHandler(async (req, res) => {
 export const uploadVehicleDocuments = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const vehicle = await Vehicle.findOne({ _id: req.body.vehicle, isDeleted: false }, '_id');
+  const vehicle = await Vehicle.findOne({ _id: req.body.vehicle, isDeleted: false }, '_id vehicleNo make model');
   if (!vehicle) {
     return res.status(404).json({ message: 'Vehicle not found' });
   }
@@ -62,6 +63,7 @@ export const uploadVehicleDocuments = asyncHandler(async (req, res) => {
     { vehicle: vehicle._id, type: { $in: uploads.map((u) => u.type) }, isDeleted: false },
     { $set: { isDeleted: true } }
   );
+  const now = new Date();
   await VehicleDocument.insertMany(
     uploads.map(({ type, file }) => ({
       vehicle: vehicle._id,
@@ -69,6 +71,8 @@ export const uploadVehicleDocuments = asyncHandler(async (req, res) => {
       file: toDataUri(file),
       mimeType: file.mimetype,
       size: file.size,
+      fileName: vehicleDocumentFileName(vehicle, type, file, now),
+      originalName: file.originalname || '',
     }))
   );
 

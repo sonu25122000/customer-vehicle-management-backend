@@ -44,8 +44,9 @@ const couponSchema = new mongoose.Schema(
       type: Date,
       required: [true, 'Expiry date/time is required'],
     },
-    // Maximum number of times this coupon can be used across all trips. Coupons created before
-    // this field existed have no limit stored and are treated as unlimited until edited.
+    // Maximum number of times this coupon can be used across all trips. Optional — left unset
+    // when the admin doesn't enter a limit, which means the coupon can be used an unlimited
+    // number of times (see hasUsageLeft in utils/couponRules.js).
     maxUsage: {
       type: Number,
       min: [1, 'Maximum usage must be at least 1'],
@@ -62,6 +63,12 @@ const couponSchema = new mongoose.Schema(
     isActive: {
       type: Boolean,
       default: true,
+    },
+    // Shown on the customer site's offers section while live (GET /api/portal/offers). Private
+    // coupons are still usable — they just aren't advertised.
+    isPublic: {
+      type: Boolean,
+      default: false,
     },
     isDeleted: {
       type: Boolean,

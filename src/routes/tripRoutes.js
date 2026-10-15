@@ -10,6 +10,8 @@ import {
   listValidators,
   tripValidators,
   rescheduleValidators,
+  generateTripOtp,
+  otpValidators,
 } from '../controllers/tripController.js';
 import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
 
@@ -190,5 +192,38 @@ router.delete('/:id', canDelete, deleteTrip);
  *       404: { $ref: '#/components/responses/NotFound' }
  */
 router.post('/:id/reschedule', canEdit, rescheduleValidators, rescheduleTrip);
+
+/**
+ * @swagger
+ * /trips/{id}/otp:
+ *   post:
+ *     tags: [Trips]
+ *     summary: Generate a new start/end OTP for the customer (moderator/admin)
+ *     description: >
+ *       The customer enters this 6-digit code on the customer site to start (trip must be Yet to Start)
+ *       or end (trip must be On Trip) the trip. Each call issues a new code that is different from every
+ *       code this trip has had and from every other live code; the previous code for that step stops
+ *       working. Codes expire after TRIP_OTP_TTL_MINUTES (default 30) and after 5 wrong attempts.
+ *       Live codes are returned by GET /trips/{id} under `otps` — never to the customer site.
+ *       Admins don't need an OTP: changing the status here starts/ends the trip directly.
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: string } }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [purpose]
+ *             properties:
+ *               purpose: { type: string, enum: [start, end] }
+ *     responses:
+ *       201: { description: 'Generated; returns { start, end } — each null or { code, expiresAt, generatedAt, generatedBy, attemptsLeft }' }
+ *       400: { $ref: '#/components/responses/ValidationError' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ */
+router.post('/:id/otp', canEdit, otpValidators, generateTripOtp);
 
 export default router;

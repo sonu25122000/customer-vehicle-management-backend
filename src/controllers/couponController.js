@@ -46,9 +46,9 @@ export const couponValidators = [
       }
       return true;
     }),
+  // Optional — blank/absent means no limit (unlimited uses).
   body('maxUsage')
-    .notEmpty()
-    .withMessage('Maximum usage is required')
+    .optional({ checkFalsy: true })
     .isInt({ min: 1, max: 1000000 })
     .withMessage('Maximum usage must be a whole number of at least 1')
     .toInt(),
@@ -77,6 +77,7 @@ export const couponValidators = [
       return true;
     }),
   body('isActive').optional().isBoolean().withMessage('Invalid status').toBoolean(),
+  body('isPublic').optional().isBoolean().withMessage('Invalid visibility').toBoolean(),
 ];
 
 function handleValidation(req, res) {
@@ -181,7 +182,7 @@ export const getCoupon = asyncHandler(async (req, res) => {
 export const createCoupon = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage, isActive } = req.body;
+  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage, isActive, isPublic } = req.body;
 
   if (new Date(expiresAt) <= new Date()) {
     return res.status(400).json({ message: 'Expiry date/time must be in the future' });
@@ -201,10 +202,12 @@ export const createCoupon = asyncHandler(async (req, res) => {
     customers: applicability === 'selected' ? customers : [],
     startAt,
     expiresAt,
-    maxUsage,
+    maxUsage: maxUsage || undefined,
     usageCount: 0,
     // Honour the form's Active checkbox. Leaving it out keeps the schema default (active).
     isActive: isActive === undefined ? true : isActive,
+    // Private unless the admin ticks "Show on customer site".
+    isPublic: Boolean(isPublic),
   });
   await coupon.populate('customers', CUSTOMERS_POPULATE);
 
@@ -215,7 +218,7 @@ export const createCoupon = asyncHandler(async (req, res) => {
 export const updateCoupon = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage, isActive } = req.body;
+  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage, isActive, isPublic } = req.body;
 
   const duplicate = await findDuplicate(code, req.params.id);
   if (duplicate) {
@@ -227,8 +230,8 @@ export const updateCoupon = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Coupon not found' });
   }
 
-  // The limit can be raised or lowered, but never below what has already been used.
-  if (maxUsage < (coupon.usageCount || 0)) {
+  // The limit can be raised, lowered or removed (unlimited), but never set below what has already been used.
+  if (maxUsage && maxUsage < (coupon.usageCount || 0)) {
     return res.status(400).json({ message: 'Maximum usage cannot be less than the times already used (' + coupon.usageCount + ')' });
   }
   // A changed expiry has to be in the future; re-saving an already-expired coupon unchanged is fine.
@@ -245,8 +248,9 @@ export const updateCoupon = asyncHandler(async (req, res) => {
     customers: applicability === 'selected' ? customers : [],
     startAt,
     expiresAt,
-    maxUsage,
+    maxUsage: maxUsage || undefined,
     isActive: isActive === undefined ? coupon.isActive : isActive,
+    isPublic: isPublic === undefined ? coupon.isPublic : isPublic,
   });
   await coupon.save();
   await coupon.populate('customers', CUSTOMERS_POPULATE);

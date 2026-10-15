@@ -7,6 +7,7 @@ import Vehicle from '../models/Vehicle.js';
 import Coupon from '../models/Coupon.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { applicableCouponFilter, calculateDiscount } from '../utils/couponRules.js';
+import { issueTripOtp, activeTripOtps, retireTripOtps } from '../utils/tripOtp.js';
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -14,7 +15,7 @@ function escapeRegex(str) {
 
 const STATUSES = ['On Trip', 'Yet to Start', 'Completed', 'Cancelled'];
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
-const CUSTOMER_POPULATE = 'name mobile1 mobile2 customerType';
+const CUSTOMER_POPULATE = 'name mobile1 mobile2 customerType profileVerified';
 const VEHICLE_POPULATE = 'vehicleNo vehicleType vehicleCategory make model year ownerName';
 
 // No 0/O/1/I — avoids characters that are easy to misread/mistype when a customer reads a
@@ -33,7 +34,7 @@ export function buildTripId() {
 
 // The unique index is the real dedup guarantee — this loop (plus the E11000 catch at the call
 // site) just avoids relying on luck alone across many bookings in the same month.
-async function generateUniqueTripId() {
+export async function generateUniqueTripId() {
   for (let attempt = 0; attempt < 5; attempt++) {
     const candidate = buildTripId();
     // eslint-disable-next-line no-await-in-loop
@@ -152,14 +153,15 @@ function checkBusinessRules(body) {
       return 'End time cannot be before start time on the same day';
     }
   }
-  if (
-    body.startOdometer !== undefined &&
-    body.startOdometer !== '' &&
-    body.endOdometer !== undefined &&
-    body.endOdometer !== '' &&
-    Number(body.endOdometer) < Number(body.startOdometer)
-  ) {
-    return 'Ending odometer reading cannot be less than the starting reading';
+  const hasReading = (v) => v !== undefined && v !== null && v !== '';
+  if (hasReading(body.endOdometer)) {
+    // The ending reading only means something against a starting one, and can never be below it.
+    if (!hasReading(body.startOdometer)) {
+      return 'Enter the starting odometer reading before the ending reading';
+    }
+    if (Number(body.endOdometer) < Number(body.startOdometer)) {
+      return 'Ending odometer reading cannot be less than the starting reading';
+    }
   }
   if (body.advance !== undefined && body.advance !== '' && body.amount !== undefined && body.amount !== '') {
     if (Number(body.advance) > Number(body.amount)) {
@@ -248,13 +250,39 @@ export const listTrips = asyncHandler(async (req, res) => {
   });
 });
 
-// GET /api/trips/:id
+// GET /api/trips/:id — includes the trip's live start/end OTPs (admin portal only; the customer site
+// never receives them).
 export const getTrip = asyncHandler(async (req, res) => {
   const trip = await Trip.findById(req.params.id).populate('customer', CUSTOMER_POPULATE).populate('vehicle', VEHICLE_POPULATE);
   if (!trip) {
     return res.status(404).json({ message: 'Trip not found' });
   }
-  res.status(200).json({ data: trip });
+  res.status(200).json({ data: { ...trip.toObject(), otps: await activeTripOtps(trip._id) } });
+});
+
+export const otpValidators = [body('purpose').isIn(['start', 'end']).withMessage("Purpose must be 'start' or 'end'")];
+
+// POST /api/trips/:id/otp { purpose: 'start'|'end' } — generates a new OTP for the customer to start
+// (while Yet to Start) or end (while On Trip) the trip on the customer site. Every call gives a new
+// code and the previous one for that step stops working (utils/tripOtp.js). Admins don't need an OTP
+// to start or end a trip themselves — they just change its status.
+export const generateTripOtp = asyncHandler(async (req, res) => {
+  if (!handleValidation(req, res)) return;
+
+  const trip = await Trip.findOne({ _id: req.params.id, isDeleted: false });
+  if (!trip) {
+    return res.status(404).json({ message: 'Trip not found' });
+  }
+  const { purpose } = req.body;
+  const neededStatus = purpose === 'start' ? 'Yet to Start' : 'On Trip';
+  if (trip.status !== neededStatus) {
+    return res.status(400).json({
+      message: `A ${purpose} OTP can only be generated while the trip is "${neededStatus}" (it is "${trip.status}")`,
+    });
+  }
+
+  await issueTripOtp(trip._id, purpose, req.admin?.username);
+  res.status(201).json({ data: await activeTripOtps(trip._id), message: `New ${purpose} OTP generated` });
 });
 
 async function assertRefsActive(customerId, vehicleId) {
@@ -315,7 +343,8 @@ export const createTrip = asyncHandler(async (req, res) => {
     startOdometer: startOdometer === '' ? undefined : startOdometer,
     endOdometer: endOdometer === '' ? undefined : endOdometer,
     status: 'Yet to Start',
-    ...(couponDoc ? { coupon: couponDoc._id, couponCode: couponDoc.code, couponDiscount } : {}),
+    createdBy: 'admin',
+    ...(couponDoc ?{ coupon: couponDoc._id, couponCode: couponDoc.code, couponDiscount } : {}),
     // rating only ever applies to a Completed trip — never accepted at creation time.
     // bookedDate is intentionally never taken from req.body — always "now" at creation.
   };
@@ -405,6 +434,7 @@ export const updateTrip = asyncHandler(async (req, res) => {
     existing.refundAmount = refundAmount;
     existing.amount = 0; // nothing further is due on a cancelled trip
     await existing.save();
+    await retireTripOtps(existing._id, ['start', 'end']);
     await existing.populate([{ path: 'customer', select: CUSTOMER_POPULATE }, { path: 'vehicle', select: VEHICLE_POPULATE }]);
     return res.status(200).json({ data: existing, message: 'Trip cancelled successfully' });
   }
@@ -490,7 +520,7 @@ export const updateTrip = asyncHandler(async (req, res) => {
     const customerDoc = await Customer.findOne({ _id: next.customer, isDeleted: false });
     if (customerDoc?.profileVerified !== 'Accepted') {
       return res.status(400).json({
-        message: "This customer's profile must be Accepted (selfie, driving licence and Aadhaar uploaded) before starting this trip",
+        message: "This customer's profile must be Accepted (selfie, driving licence and Aadhaar all approved) before starting this trip",
       });
     }
   }
@@ -527,7 +557,18 @@ export const updateTrip = asyncHandler(async (req, res) => {
   existing.securityDeposit = next.securityDeposit ?? existing.securityDeposit ?? 0;
   existing.startOdometer = next.startOdometer === '' ? undefined : next.startOdometer;
   existing.endOdometer = next.endOdometer === '' ? undefined : next.endOdometer;
+  const startedNow = requestedStatus === 'On Trip' && existing.status !== 'On Trip';
+  const endedNow = requestedStatus === 'Completed' && existing.status !== 'Completed';
   existing.status = requestedStatus;
+  // An admin starting/ending a trip here never needs an OTP — that's only for the customer site.
+  if (startedNow) {
+    existing.startedAt = new Date();
+    existing.startedBy = 'admin';
+  }
+  if (endedNow) {
+    existing.endedAt = new Date();
+    existing.endedBy = 'admin';
+  }
 
   let couponReserved = false;
   if (couponDoc) {
@@ -560,6 +601,9 @@ export const updateTrip = asyncHandler(async (req, res) => {
   if (releaseOldCoupon) {
     await Coupon.updateOne({ _id: currentCouponId, usageCount: { $gt: 0 } }, { $inc: { usageCount: -1 } });
   }
+  // A step the admin has already done can't be done again by the customer with a leftover OTP.
+  if (startedNow) await retireTripOtps(existing._id, ['start']);
+  if (endedNow) await retireTripOtps(existing._id, ['start', 'end']);
   await existing.populate([{ path: 'customer', select: CUSTOMER_POPULATE }, { path: 'vehicle', select: VEHICLE_POPULATE }]);
 
   res.status(200).json({ data: existing, message: 'Trip updated successfully' });

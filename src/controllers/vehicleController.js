@@ -137,6 +137,11 @@ export const vehicleValidators = [
     .withMessage('Invalid transmission'),
   body('fuel').trim().notEmpty().withMessage('Fuel type is required').isIn(FUEL_TYPES).withMessage('Invalid fuel type'),
   body('status').optional({ checkFalsy: true }).isIn(VEHICLE_STATUSES).withMessage('Invalid vehicle status'),
+  body('pricePerDay')
+    .optional({ checkFalsy: true })
+    .isFloat({ min: 1, max: 1000000 })
+    .withMessage('Price per day must be a positive amount')
+    .toFloat(),
   body('ownerName').trim().notEmpty().withMessage('Owner/Host name is required'),
   body('ownerMobile')
     .trim()
@@ -184,7 +189,7 @@ function tripStatsStages() {
         let: { vehicleId: '$_id' },
         pipeline: [
           { $match: { $expr: { $and: [{ $eq: ['$vehicle', '$$vehicleId'] }, { $eq: ['$isDeleted', false] }] } } },
-          { $project: { status: 1, rating: 1 } },
+          { $project: { status: 1, rating: 1, customerRating: 1 } },
         ],
         as: 'vehicleTrips',
       },
@@ -197,12 +202,16 @@ function tripStatsStages() {
         // Rating is always 1-5 when set — checking membership avoids the missing-vs-null
         // ambiguity that $ne: [field, null] doesn't reliably resolve for absent fields.
         ratedTrips: { $filter: { input: '$vehicleTrips', cond: { $in: ['$$this.rating', [1, 2, 3, 4, 5]] } } },
+        customerRatedTrips: { $filter: { input: '$vehicleTrips', cond: { $in: ['$$this.customerRating', [1, 2, 3, 4, 5]] } } },
       },
     },
     {
       $addFields: {
         ratingsGiven: { $size: '$ratedTrips' },
         avgRating: { $ifNull: [{ $round: [{ $avg: '$ratedTrips.rating' }, 1] }, 0] },
+        // Customers' own ratings of the vehicle, given on the customer site after a Completed trip.
+        customerRatingsGiven: { $size: '$customerRatedTrips' },
+        customerAvgRating: { $ifNull: [{ $round: [{ $avg: '$customerRatedTrips.customerRating' }, 1] }, 0] },
       },
     },
   ];
@@ -282,6 +291,7 @@ export const listVehicles = asyncHandler(async (req, res) => {
           make: 1,
           model: 1,
           year: 1,
+          pricePerDay: 1,
           ownerName: 1,
           ownerMobile: 1,
           isDeleted: 1,
@@ -290,6 +300,8 @@ export const listVehicles = asyncHandler(async (req, res) => {
           tripsCompleted: 1,
           ratingsGiven: 1,
           avgRating: 1,
+          customerRatingsGiven: 1,
+          customerAvgRating: 1,
           photoCount: 1,
           documentCount: 1,
         },
@@ -355,7 +367,7 @@ export const getVehicle = asyncHandler(async (req, res) => {
     Vehicle.aggregate([
       { $match: { _id: vehicle._id } },
       ...tripStatsStages(),
-      { $project: { tripsCompleted: 1, ratingsGiven: 1, avgRating: 1 } },
+      { $project: { tripsCompleted: 1, ratingsGiven: 1, avgRating: 1, customerRatingsGiven: 1, customerAvgRating: 1 } },
     ]),
     vehicleMediaSummary(vehicle._id),
   ]);
@@ -367,6 +379,8 @@ export const getVehicle = asyncHandler(async (req, res) => {
       tripsCompleted: stats?.tripsCompleted || 0,
       ratingsGiven: stats?.ratingsGiven || 0,
       avgRating: stats?.avgRating || 0,
+      customerRatingsGiven: stats?.customerRatingsGiven || 0,
+      customerAvgRating: stats?.customerAvgRating || 0,
     },
   });
 });
@@ -388,7 +402,8 @@ async function hasAllPhotoSides(vehicleId) {
 export const createVehicle = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, make, model, year, ownerName, ownerMobile } = req.body;
+  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, make, model, year, pricePerDay, ownerName, ownerMobile } =
+    req.body;
 
   const duplicate = await findDuplicate(vehicleNo);
   if (duplicate) {
@@ -406,6 +421,7 @@ export const createVehicle = asyncHandler(async (req, res) => {
     make,
     model,
     year,
+    pricePerDay: pricePerDay || undefined,
     ownerName,
     ownerMobile,
   });
@@ -416,7 +432,7 @@ export const createVehicle = asyncHandler(async (req, res) => {
 export const updateVehicle = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status, make, model, year, ownerName, ownerMobile } =
+  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status, make, model, year, pricePerDay, ownerName, ownerMobile } =
     req.body;
 
   const duplicate = await findDuplicate(vehicleNo, req.params.id);
@@ -436,7 +452,20 @@ export const updateVehicle = asyncHandler(async (req, res) => {
     });
   }
 
-  vehicle.set({ vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status: nextStatus, make, model, year, ownerName, ownerMobile });
+  vehicle.set({
+    vehicleNo,
+    vehicleType,
+    vehicleCategory,
+    transmission,
+    fuel,
+    status: nextStatus,
+    make,
+    model,
+    year,
+    pricePerDay: pricePerDay || undefined,
+    ownerName,
+    ownerMobile,
+  });
   await vehicle.save();
 
   res.status(200).json({

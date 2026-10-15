@@ -3,11 +3,31 @@ import Customer from '../models/Customer.js';
 import CustomerDocument, { CUSTOMER_DOCUMENT_TYPES } from '../models/CustomerDocument.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { toDataUri } from '../utils/media.js';
+import { customerDocumentFileName } from '../utils/fileNames.js';
+import { syncProfileVerification } from '../utils/verification.js';
 
-const CUSTOMER_POPULATE = 'name mobile1';
+const CUSTOMER_POPULATE = 'name mobile1 profileVerified';
+const MAX_REASON_LENGTH = 300;
 
 export const listValidators = [query('customer').isMongoId().withMessage('A valid customer is required')];
 export const uploadValidators = [body('customer').isMongoId().withMessage('A valid customer is required')];
+
+export const reviewValidators = [
+  body('customer').isMongoId().withMessage('A valid customer is required'),
+  body('status').isIn(['Approved', 'Rejected']).withMessage('Status must be Approved or Rejected'),
+  body('documents')
+    .optional()
+    .isArray({ min: 1 })
+    .withMessage('Select at least one document')
+    .custom((ids) => ids.every((id) => /^[0-9a-fA-F]{24}$/.test(id)))
+    .withMessage('Invalid document selection'),
+  body('reason')
+    .optional({ checkFalsy: true })
+    .trim()
+    .isLength({ max: MAX_REASON_LENGTH })
+    .withMessage(`Reason cannot exceed ${MAX_REASON_LENGTH} characters`),
+  body('reason').if(body('status').equals('Rejected')).trim().notEmpty().withMessage('Enter a reason for rejecting'),
+];
 
 function handleValidation(req, res) {
   const errors = validationResult(req);
@@ -22,6 +42,31 @@ function findActiveForCustomer(customerId) {
   return CustomerDocument.find({ customer: customerId, isDeleted: false })
     .populate('customer', CUSTOMER_POPULATE)
     .sort({ createdAt: 1 });
+}
+
+// Stores newly uploaded documents for a customer — shared by the admin portal (here) and the customer
+// site (portalController.uploadDocuments). Each uploaded type replaces that customer's previous
+// document of the same type and starts out Pending review; documents of other types keep their review
+// as they are. Every file gets a generated name (utils/fileNames.js).
+export async function storeCustomerDocuments(customer, uploads, uploadedBy) {
+  const now = new Date();
+  await CustomerDocument.updateMany(
+    { customer: customer._id, type: { $in: uploads.map((u) => u.type) }, isDeleted: false },
+    { $set: { isDeleted: true } }
+  );
+  await CustomerDocument.insertMany(
+    uploads.map(({ type, file }) => ({
+      customer: customer._id,
+      type,
+      file: toDataUri(file),
+      mimeType: file.mimetype,
+      size: file.size,
+      fileName: customerDocumentFileName(customer, type, file, now),
+      originalName: file.originalname || '',
+      uploadedBy,
+      status: 'Pending',
+    }))
+  );
 }
 
 // GET /api/customer-documents?customer=<id>
@@ -43,11 +88,10 @@ export const getCustomerDocument = asyncHandler(async (req, res) => {
 });
 
 // POST /api/customer-documents (multipart/form-data: customer + any of selfie/drivingLicence/aadhaar/other)
-// Each uploaded type replaces that customer's previous document of the same type.
 export const uploadCustomerDocuments = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const customer = await Customer.findOne({ _id: req.body.customer, isDeleted: false }, '_id');
+  const customer = await Customer.findOne({ _id: req.body.customer, isDeleted: false }, '_id name mobile1');
   if (!customer) {
     return res.status(404).json({ message: 'Customer not found' });
   }
@@ -58,21 +102,58 @@ export const uploadCustomerDocuments = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'Select at least one document to upload' });
   }
 
-  await CustomerDocument.updateMany(
-    { customer: customer._id, type: { $in: uploads.map((u) => u.type) }, isDeleted: false },
-    { $set: { isDeleted: true } }
-  );
-  await CustomerDocument.insertMany(
-    uploads.map(({ type, file }) => ({
-      customer: customer._id,
-      type,
-      file: toDataUri(file),
-      mimeType: file.mimetype,
-      size: file.size,
-    }))
-  );
+  await storeCustomerDocuments(customer, uploads, 'admin');
+  const profileVerified = await syncProfileVerification(customer._id, 'admin', req.admin?.username);
 
-  res.status(200).json({ data: await findActiveForCustomer(customer._id), message: 'Documents uploaded successfully' });
+  res.status(200).json({
+    data: await findActiveForCustomer(customer._id),
+    profileVerified,
+    message: 'Documents uploaded successfully',
+  });
+});
+
+// POST /api/customer-documents/review — the one endpoint for approving or rejecting verification
+// documents, whether the customer uploaded them on the customer site or an admin uploaded them here.
+//   { customer, status: 'Approved'|'Rejected', documents?: [id, ...], reason? }
+// With `documents`, only those are reviewed (one document at a time, or a few); without it, every
+// document the customer has on file is — i.e. accepting/rejecting the whole profile in one go.
+// Rejecting needs a reason, which the customer sees next to that document so they know what to fix.
+// The customer's profileVerified is recomputed from the documents afterwards: it only becomes
+// Accepted once selfie, driving licence and Aadhaar are all Approved.
+export const reviewCustomerDocuments = asyncHandler(async (req, res) => {
+  if (!handleValidation(req, res)) return;
+
+  const { customer: customerId, status, documents } = req.body;
+  const customer = await Customer.findOne({ _id: customerId, isDeleted: false }, '_id');
+  if (!customer) {
+    return res.status(404).json({ message: 'Customer not found' });
+  }
+
+  const filter = { customer: customer._id, isDeleted: false };
+  if (documents) filter._id = { $in: documents };
+  const matching = await CustomerDocument.countDocuments(filter);
+  if (!matching || (documents && matching !== documents.length)) {
+    return res.status(400).json({
+      message: documents ? "Some of these documents aren't on file for this customer any more" : 'This customer has no documents to review',
+    });
+  }
+
+  await CustomerDocument.updateMany(filter, {
+    $set: {
+      status,
+      rejectionReason: status === 'Rejected' ? req.body.reason.trim() : '',
+      reviewedAt: new Date(),
+      reviewedBy: req.admin?.username || '',
+    },
+  });
+  const profileVerified = await syncProfileVerification(customer._id, 'admin', req.admin?.username);
+
+  const count = documents ? documents.length : matching;
+  res.status(200).json({
+    data: await findActiveForCustomer(customer._id),
+    profileVerified,
+    message: `${count} document${count === 1 ? '' : 's'} ${status.toLowerCase()}`,
+  });
 });
 
 // DELETE /api/customer-documents/:id — soft delete
@@ -85,5 +166,7 @@ export const deleteCustomerDocument = asyncHandler(async (req, res) => {
   if (!document) {
     return res.status(404).json({ message: 'Document not found' });
   }
+  // A removed required document takes an Accepted profile back to Pending.
+  await syncProfileVerification(document.customer, 'admin', req.admin?.username);
   res.status(200).json({ message: 'Document deleted successfully' });
 });

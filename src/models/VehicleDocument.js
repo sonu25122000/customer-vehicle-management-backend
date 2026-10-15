@@ -24,6 +24,10 @@ const vehicleDocumentSchema = new mongoose.Schema(
     },
     mimeType: { type: String, default: '' },
     size: { type: Number, default: 0 },
+    // Generated server-side from the vehicle's details (utils/fileNames.js), e.g.
+    // KA01AB1234_MARUTI-BALENO_RC_20261015-103000.pdf. originalName is what was uploaded.
+    fileName: { type: String, default: '' },
+    originalName: { type: String, default: '' },
     isDeleted: {
       type: Boolean,
       default: false,

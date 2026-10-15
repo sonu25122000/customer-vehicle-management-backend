@@ -105,15 +105,45 @@ const tripSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
-    // The only rating in the Trip/Vehicle relationship — rolls up into the vehicle's
-    // average rating (see vehicleController's aggregation). There is no separate
-    // vehicle-only rating field.
+    // 'admin' for trips created from the admin portal, 'customer' for bookings made on the
+    // customer site — same convention as Customer.createdBy. Set server-side only.
+    createdBy: {
+      type: String,
+      enum: ['admin', 'customer'],
+      default: 'admin',
+    },
+    // The admin's rating of the trip — rolls up into the vehicle's average rating (see
+    // vehicleController's aggregation).
     rating: {
       type: Number,
       min: 1,
       max: 5,
       default: undefined,
     },
+    // The customer's own rating of the vehicle, given once on the customer site after the trip is
+    // Completed (portalController.rateTrip). Rolls up separately into the vehicle's customer rating.
+    customerRating: {
+      type: Number,
+      min: 1,
+      max: 5,
+      default: undefined,
+    },
+    customerReview: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+      default: '',
+    },
+    customerRatedAt: {
+      type: Date,
+    },
+    // When the trip actually started / ended, and from where: 'admin' when the status was changed in
+    // the admin portal (no OTP needed), 'customer' when the customer did it on the customer site with
+    // the OTP an admin shared (see models/TripOtp.js).
+    startedAt: { type: Date },
+    startedBy: { type: String, enum: ['admin', 'customer'] },
+    endedAt: { type: Date },
+    endedBy: { type: String, enum: ['admin', 'customer'] },
     isDeleted: {
       type: Boolean,
       default: false,
@@ -156,6 +186,21 @@ const tripSchema = new mongoose.Schema(
     toObject: { getters: true, virtuals: false },
   }
 );
+
+// Last line of defence for the odometer rule, whichever code path saves the trip (admin edit, the
+// customer ending the trip, ...). tripController.checkBusinessRules gives the friendlier 400 first.
+tripSchema.pre('validate', function checkOdometer(next) {
+  const start = this.startOdometer;
+  const end = this.endOdometer;
+  if (end !== undefined && end !== null) {
+    if (start === undefined || start === null) {
+      this.invalidate('endOdometer', 'Enter the starting odometer reading before the ending reading');
+    } else if (end < start) {
+      this.invalidate('endOdometer', 'Ending odometer reading cannot be less than the starting reading');
+    }
+  }
+  next();
+});
 
 tripSchema.index({ customer: 1, isDeleted: 1, startDate: -1 });
 tripSchema.index({ vehicle: 1, isDeleted: 1, status: 1 });

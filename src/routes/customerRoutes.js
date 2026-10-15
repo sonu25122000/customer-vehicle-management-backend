@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   listCustomers,
   getCustomer,
+  getCustomerHistory,
   createCustomer,
   updateCustomer,
   deleteCustomer,
@@ -9,7 +10,8 @@ import {
   listCustomerOptions,
   listValidators,
   statsValidators,
-  customerValidators,
+  createCustomerValidators,
+  updateCustomerValidators,
 } from '../controllers/customerController.js';
 import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
 
@@ -93,7 +95,7 @@ router.get('/options', listCustomerOptions);
  *       403: { $ref: '#/components/responses/Forbidden' }
  */
 router.get('/', listValidators, listCustomers);
-router.post('/', canEdit, customerValidators, createCustomer);
+router.post('/', canEdit, createCustomerValidators, createCustomer);
 
 /**
  * @swagger
@@ -143,9 +145,25 @@ router.post('/', canEdit, customerValidators, createCustomer);
  *       403: { $ref: '#/components/responses/Forbidden' }
  *       404: { $ref: '#/components/responses/NotFound' }
  */
+/**
+ * @swagger
+ * /customers/{id}/history:
+ *   get:
+ *     tags: [Customers]
+ *     summary: Profile edit history (by admins here and by the customer on the customer site), newest first
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: History rows }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ */
+router.get('/:id/history', getCustomerHistory);
 router.get('/:id', getCustomer);
-router.put('/:id', canEdit, customerValidators, updateCustomer);
-router.patch('/:id', canEdit, customerValidators, updateCustomer);
+router.put('/:id', canEdit, updateCustomerValidators, updateCustomer);
+router.patch('/:id', canEdit, updateCustomerValidators, updateCustomer);
 router.delete('/:id', canDelete, deleteCustomer);
 
 export default router;

@@ -7,15 +7,24 @@ export function toDataUri(file) {
   return `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
 }
 
-// customerId -> the document types on file (e.g. ['selfie', 'aadhaar']). Customer responses carry
-// only this summary, never the files; the files come from /api/customer-documents.
-export async function documentTypesByCustomer(customerIds) {
+// customerId -> { types: ['selfie', 'aadhaar'], statuses: { selfie: 'Approved', aadhaar: 'Pending' } }
+// for the documents on file. Customer responses carry only this summary, never the files; the files
+// come from /api/customer-documents.
+export async function documentSummaryByCustomer(customerIds) {
   if (!customerIds.length) return new Map();
   const rows = await CustomerDocument.aggregate([
     { $match: { customer: { $in: customerIds }, isDeleted: false } },
-    { $group: { _id: '$customer', types: { $addToSet: '$type' } } },
+    { $group: { _id: '$customer', docs: { $push: { type: '$type', status: '$status' } } } },
   ]);
-  return new Map(rows.map((r) => [String(r._id), r.types]));
+  return new Map(
+    rows.map((r) => [
+      String(r._id),
+      {
+        types: [...new Set(r.docs.map((d) => d.type))],
+        statuses: Object.fromEntries(r.docs.map((d) => [d.type, d.status || 'Pending'])),
+      },
+    ])
+  );
 }
 
 // Which photo slots / document types a vehicle has on file, without loading the files. Vehicle

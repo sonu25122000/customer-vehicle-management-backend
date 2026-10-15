@@ -24,12 +24,11 @@ const customerDocumentSchema = new mongoose.Schema(
       enum: CUSTOMER_DOCUMENT_TYPES,
       required: [true, 'Document type is required'],
     },
-    // base64 data URI (image or PDF), same storage approach as before, since no object storage is
-    // configured for this project.
-    file: {
-      type: String,
-      required: true,
-    },
+    // The file's object key in the S3 bucket (utils/storage.js). `file` is legacy: files uploaded before
+    // S3 was introduced were stored here as a base64 data URI. It's never written any more, and
+    // `npm run migrate:s3` moves those files into S3 and clears it.
+    s3Key: { type: String },
+    file: { type: String },
     mimeType: { type: String, default: '' },
     size: { type: Number, default: 0 },
     // Generated server-side from the customer's details and the document type (utils/fileNames.js),
@@ -51,6 +50,11 @@ const customerDocumentSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+customerDocumentSchema.pre('validate', function requireFile(next) {
+  if (!this.s3Key && !this.file) this.invalidate('file', 'File is required');
+  next();
+});
 
 customerDocumentSchema.index({ customer: 1, isDeleted: 1, type: 1 });
 

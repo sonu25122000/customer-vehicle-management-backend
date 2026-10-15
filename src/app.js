@@ -19,6 +19,9 @@ import customerDocumentRoutes from './routes/customerDocumentRoutes.js';
 import vehiclePhotoRoutes from './routes/vehiclePhotoRoutes.js';
 import vehicleDocumentRoutes from './routes/vehicleDocumentRoutes.js';
 import portalRoutes from './routes/portalRoutes.js';
+import testimonialRoutes from './routes/testimonialRoutes.js';
+import reportRoutes from './routes/reportRoutes.js';
+import expenseRoutes from './routes/expenseRoutes.js';
 import { notFound, errorHandler } from './middleware/errorHandler.js';
 import { requireAuth, requireRole } from './middleware/auth.js';
 import { buildTripId } from './controllers/tripController.js';
@@ -32,6 +35,9 @@ import VehiclePhoto from './models/VehiclePhoto.js';
 import VehicleDocument from './models/VehicleDocument.js';
 import CustomerHistory from './models/CustomerHistory.js';
 import TripOtp from './models/TripOtp.js';
+import Testimonial from './models/Testimonial.js';
+import VehicleExpense from './models/VehicleExpense.js';
+import { DailyReport, MonthlyReport, YearlyReport, ReportJob } from './models/Report.js';
 
 // Admin account is created manually (e.g. directly in the database) — not by this app.
 // If ADMIN_USERNAME/ADMIN_PASSWORD are set, this syncs an *existing* admin to match them
@@ -106,6 +112,9 @@ app.use('/api/coupons', couponRoutes);
 app.use('/api/customer-documents', customerDocumentRoutes);
 app.use('/api/vehicle-photos', vehiclePhotoRoutes);
 app.use('/api/vehicle-documents', vehicleDocumentRoutes);
+app.use('/api/testimonials', testimonialRoutes);
+app.use('/api/reports', reportRoutes);
+app.use('/api/expenses', expenseRoutes);
 // Customer-facing site (separate frontend app) — has its own customer login, see routes/portalRoutes.js.
 app.use('/api/portal', portalRoutes);
 
@@ -163,6 +172,22 @@ export function initialize() {
           `Backfilled isDeleted on ${customerBackfill.modifiedCount} customer(s), ${vehicleBackfill.modifiedCount} vehicle(s), ${tripBackfill.modifiedCount} trip(s)`
         );
       }
+      // Trips have one rating now (the customer's, given on the customer site). Ratings customers gave
+      // under the old separate "vehicle rating" become the trip's rating. Additive only: customerRating
+      // stays on the trip, so this is safe to run against data an older deployment still reads.
+      const [ratingBackfill, sourceBackfill] = await Promise.all([
+        Trip.collection.updateMany(
+          { customerRating: { $in: [1, 2, 3, 4, 5] }, $expr: { $ne: ['$rating', '$customerRating'] } },
+          [{ $set: { rating: '$customerRating' } }]
+        ),
+        // Every trip from before the booking source existed was booked directly.
+        Trip.collection.updateMany({ source: { $exists: false } }, { $set: { source: 'Direct' } }),
+      ]);
+      if (ratingBackfill.modifiedCount || sourceBackfill.modifiedCount) {
+        console.log(
+          `Backfilled rating from customerRating on ${ratingBackfill.modifiedCount} trip(s), source:'Direct' on ${sourceBackfill.modifiedCount} trip(s)`
+        );
+      }
       if (adminRoleBackfill.modifiedCount) {
         console.log(`Backfilled role:'admin' on ${adminRoleBackfill.modifiedCount} pre-existing account(s)`);
       }
@@ -213,6 +238,12 @@ export function initialize() {
         VehicleDocument.syncIndexes(),
         CustomerHistory.syncIndexes(),
         TripOtp.syncIndexes(),
+        Testimonial.syncIndexes(),
+        VehicleExpense.syncIndexes(),
+        DailyReport.syncIndexes(),
+        MonthlyReport.syncIndexes(),
+        YearlyReport.syncIndexes(),
+        ReportJob.syncIndexes(),
       ]);
     })().catch((err) => {
       initPromise = null;

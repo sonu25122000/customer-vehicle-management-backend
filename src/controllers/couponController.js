@@ -138,7 +138,7 @@ export const getCouponStats = asyncHandler(async (_req, res) => {
 });
 
 export const applicableValidators = [
-  query('customer').isMongoId().withMessage('A valid customer is required'),
+  query('customer').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid customer'),
   query('current').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid current coupon'),
 ];
 
@@ -146,7 +146,9 @@ const APPLICABLE_FIELDS = 'code discountType value maxDiscount applicability sta
 
 // GET /api/coupons/applicable?customer=<id>&current=<couponId> — coupons the trip form offers for this
 // customer: live right now (active, inside its start/expiry window), not used up, and either open to
-// all customers or listing this customer.
+// all customers or listing this customer. Without a customer (none picked yet), the coupons open to all
+// customers. Whether a coupon is public or private doesn't matter here — that only decides whether the
+// customer site advertises it.
 // `current` is the coupon already on the trip being edited. It is always returned, flagged
 // isCurrent, even if it has since expired, been deactivated or used up, because a coupon already
 // applied to a trip stays valid on that trip (see tripController.updateTrip). stillApplicable tells

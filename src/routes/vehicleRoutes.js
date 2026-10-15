@@ -9,6 +9,8 @@ import {
   deleteVehicle,
   listValidators,
   vehicleValidators,
+  updateVehicleStatus,
+  statusValidators,
 } from '../controllers/vehicleController.js';
 import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
 
@@ -152,6 +154,28 @@ router.post('/', canEdit, vehicleValidators, createVehicle);
  */
 router.get('/:id', getVehicle);
 router.put('/:id', canEdit, vehicleValidators, updateVehicle);
+/**
+ * @swagger
+ * /vehicles/{id}/status:
+ *   patch:
+ *     tags: [Vehicles]
+ *     summary: Change only a vehicle's status (moderator/admin)
+ *     description: >
+ *       Active needs all 4 photo sides, the RC and the insurance on file (400 otherwise, naming what's
+ *       missing). Removing one of those from an Active vehicle puts it On Hold automatically.
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: string } }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { type: object, required: [status], properties: { status: { type: string, enum: [Active, On Hold, Inactive] } } }
+ *     responses:
+ *       200: { description: Updated vehicle }
+ *       400: { $ref: '#/components/responses/ValidationError' }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ */
+router.patch('/:id/status', canEdit, statusValidators, updateVehicleStatus);
 router.patch('/:id', canEdit, vehicleValidators, updateVehicle);
 router.delete('/:id', canDelete, deleteVehicle);
 

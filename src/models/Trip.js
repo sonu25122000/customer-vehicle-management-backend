@@ -1,5 +1,7 @@
 import mongoose from 'mongoose';
 
+export const TRIP_SOURCES = ['Direct', 'Zoomcar'];
+
 const decimalGetter = (v) => (v !== undefined && v !== null ? parseFloat(v.toString()) : v);
 
 const tripSchema = new mongoose.Schema(
@@ -112,16 +114,24 @@ const tripSchema = new mongoose.Schema(
       enum: ['admin', 'customer'],
       default: 'admin',
     },
-    // The admin's rating of the trip — rolls up into the vehicle's average rating (see
-    // vehicleController's aggregation).
+    // Where the booking came from: booked with us directly (always the case for bookings made on the
+    // customer site), or through Zoomcar.
+    source: {
+      type: String,
+      enum: TRIP_SOURCES,
+      default: 'Direct',
+    },
+    // The trip's one rating: given by the customer on the customer site once the trip is Completed
+    // (portalController.rateTrip), with an optional review (customerReview). It rates the trip and the
+    // car together — it rolls up into the vehicle's average rating and the car's reviews on the site.
     rating: {
       type: Number,
       min: 1,
       max: 5,
       default: undefined,
     },
-    // The customer's own rating of the vehicle, given once on the customer site after the trip is
-    // Completed (portalController.rateTrip). Rolls up separately into the vehicle's customer rating.
+    // Legacy: the customer's separate vehicle rating from when trips had two ratings. Copied into
+    // `rating` at startup (app.js) and no longer written.
     customerRating: {
       type: Number,
       min: 1,

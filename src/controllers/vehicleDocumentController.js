@@ -2,8 +2,9 @@ import { body, query, validationResult } from 'express-validator';
 import Vehicle from '../models/Vehicle.js';
 import VehicleDocument, { VEHICLE_DOCUMENT_TYPES } from '../models/VehicleDocument.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { toDataUri } from '../utils/media.js';
+import { objectKey, storeFile, withFileUrls } from '../utils/storage.js';
 import { vehicleDocumentFileName } from '../utils/fileNames.js';
+import { holdIfIncomplete } from '../utils/media.js';
 
 const VEHICLE_POPULATE = 'vehicleNo make model';
 
@@ -19,10 +20,12 @@ function handleValidation(req, res) {
   return true;
 }
 
-function findActiveForVehicle(vehicleId) {
-  return VehicleDocument.find({ vehicle: vehicleId, isDeleted: false })
+// The vehicle's documents, each with `file` set to a short-lived URL of the file in S3.
+async function findActiveForVehicle(vehicleId) {
+  const rows = await VehicleDocument.find({ vehicle: vehicleId, isDeleted: false })
     .populate('vehicle', VEHICLE_POPULATE)
     .sort({ createdAt: 1 });
+  return withFileUrls(rows, 'file');
 }
 
 // GET /api/vehicle-documents?vehicle=<id>
@@ -40,7 +43,8 @@ export const getVehicleDocument = asyncHandler(async (req, res) => {
   if (!document) {
     return res.status(404).json({ message: 'Document not found' });
   }
-  res.status(200).json({ data: document });
+  const [withUrl] = await withFileUrls([document], 'file');
+  res.status(200).json({ data: withUrl });
 });
 
 // POST /api/vehicle-documents (multipart/form-data: vehicle + rc and/or insurance, image or PDF)
@@ -59,19 +63,25 @@ export const uploadVehicleDocuments = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'Select at least one document to upload' });
   }
 
+  // Files go to S3 first, so a failed upload leaves the vehicle's current documents untouched.
+  const now = new Date();
+  const named = uploads.map((u) => ({ ...u, fileName: vehicleDocumentFileName(vehicle, u.type, u.file, now) }));
+  const keys = await Promise.all(
+    named.map(({ file, fileName }) => storeFile(file, objectKey('vehicles', String(vehicle._id), 'documents', fileName)))
+  );
+
   await VehicleDocument.updateMany(
     { vehicle: vehicle._id, type: { $in: uploads.map((u) => u.type) }, isDeleted: false },
     { $set: { isDeleted: true } }
   );
-  const now = new Date();
   await VehicleDocument.insertMany(
-    uploads.map(({ type, file }) => ({
+    named.map(({ type, file, fileName }, i) => ({
       vehicle: vehicle._id,
       type,
-      file: toDataUri(file),
+      s3Key: keys[i],
       mimeType: file.mimetype,
       size: file.size,
-      fileName: vehicleDocumentFileName(vehicle, type, file, now),
+      fileName,
       originalName: file.originalname || '',
     }))
   );
@@ -79,7 +89,9 @@ export const uploadVehicleDocuments = asyncHandler(async (req, res) => {
   res.status(200).json({ data: await findActiveForVehicle(vehicle._id), message: 'Documents uploaded successfully' });
 });
 
-// DELETE /api/vehicle-documents/:id — soft delete
+// DELETE /api/vehicle-documents/:id — soft delete. The RC and insurance are needed for a vehicle to be
+// Active, so removing one from an Active vehicle puts it On Hold; `vehicleStatus` is the vehicle's
+// status afterwards.
 export const deleteVehicleDocument = asyncHandler(async (req, res) => {
   const document = await VehicleDocument.findOneAndUpdate(
     { _id: req.params.id, isDeleted: false },
@@ -89,5 +101,10 @@ export const deleteVehicleDocument = asyncHandler(async (req, res) => {
   if (!document) {
     return res.status(404).json({ message: 'Document not found' });
   }
-  res.status(200).json({ message: 'Document deleted successfully' });
+  const vehicleStatus = await holdIfIncomplete(document.vehicle);
+  res.status(200).json({
+    data: await findActiveForVehicle(document.vehicle),
+    vehicleStatus,
+    message: 'Document removed successfully',
+  });
 });

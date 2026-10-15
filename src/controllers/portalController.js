@@ -7,12 +7,14 @@ import Vehicle from '../models/Vehicle.js';
 import VehiclePhoto from '../models/VehiclePhoto.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { recordCustomerHistory } from '../utils/customerHistory.js';
-import { deactivateExpiredCoupons } from '../utils/couponRules.js';
+import { applicableCouponFilter, calculateDiscount, couponCodeProblem, deactivateExpiredCoupons } from '../utils/couponRules.js';
 import { documentSummary, syncProfileVerification } from '../utils/verification.js';
-import { consumeTripOtp, OTP_LENGTH } from '../utils/tripOtp.js';
+import { consumeTripOtp, ensureTripOtps, OTP_LENGTH } from '../utils/tripOtp.js';
+import { readFile } from '../utils/storage.js';
 import { generateUniqueTripId } from './tripController.js';
 import { storeCustomerDocuments } from './customerDocumentController.js';
 import { publicCustomer } from './portalAuthController.js';
+import { firstNameAndInitial, publicTestimonials } from './testimonialController.js';
 
 // Everything the customer site needs: the signed-in customer's profile, verification documents and
 // trips, plus the public list of cars and offers. Responses never include anything only the business
@@ -159,12 +161,16 @@ async function photosByVehicle(vehicleIds) {
   return map;
 }
 
+// Ratings the customers gave themselves on the site (customerRatedAt set) — older trips can carry a
+// rating an admin gave, which the site doesn't show.
+const CUSTOMER_RATED = { rating: { $in: [1, 2, 3, 4, 5] }, customerRatedAt: { $exists: true } };
+
 // vehicleId -> { avg, count } of the ratings customers gave the car after their trips.
 async function customerRatingsByVehicle(vehicleIds) {
   if (!vehicleIds.length) return new Map();
   const rows = await Trip.aggregate([
-    { $match: { vehicle: { $in: vehicleIds }, isDeleted: false, customerRating: { $in: [1, 2, 3, 4, 5] } } },
-    { $group: { _id: '$vehicle', avg: { $avg: '$customerRating' }, count: { $sum: 1 } } },
+    { $match: { vehicle: { $in: vehicleIds }, isDeleted: false, ...CUSTOMER_RATED } },
+    { $group: { _id: '$vehicle', avg: { $avg: '$rating' }, count: { $sum: 1 } } },
   ]);
   return new Map(rows.map((r) => [String(r._id), { avg: Math.round(r.avg * 10) / 10, count: r.count }]));
 }
@@ -246,15 +252,67 @@ export const getVehicle = asyncHandler(async (req, res) => {
   });
 });
 
-// GET /api/portal/vehicle-photos/:id — the photo itself as an image (decoded from the stored data
-// URI), so the site can use it directly in <img src> and the browser can cache it. Photos of Active
+// GET /api/portal/vehicles/:id/reviews — what customers said about this car after their trips ("Our
+// Reviews" on the car's page), newest first. Only the customer's first name and initial are shown.
+export const listVehicleReviews = asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    return res.status(404).json({ message: 'Car not found' });
+  }
+  const trips = await Trip.find(
+    { vehicle: req.params.id, isDeleted: false, ...CUSTOMER_RATED },
+    'rating customerReview customerRatedAt customer'
+  )
+    .populate('customer', 'name')
+    .sort({ customerRatedAt: -1 })
+    .limit(50)
+    .lean();
+  res.status(200).json({
+    data: trips.map((t) => ({
+      _id: t._id,
+      rating: t.rating,
+      review: t.customerReview || '',
+      name: firstNameAndInitial(t.customer?.name),
+      ratedAt: t.customerRatedAt,
+    })),
+  });
+});
+
+// GET /api/portal/testimonials — the home page reviews carousel (admin portal: "Home Carousel").
+export const listTestimonials = asyncHandler(async (_req, res) => {
+  res.status(200).json({ data: await publicTestimonials() });
+});
+
+// GET /api/portal/stats — headline numbers for the home page: cars on the site, completed trips and the
+// customers' average rating.
+export const getSiteStats = asyncHandler(async (_req, res) => {
+  const [cars, completedTrips, [ratings]] = await Promise.all([
+    Vehicle.countDocuments({ isDeleted: false, status: 'Active' }),
+    Trip.countDocuments({ isDeleted: false, status: 'Completed' }),
+    Trip.aggregate([
+      { $match: { isDeleted: false, ...CUSTOMER_RATED } },
+      { $group: { _id: null, avg: { $avg: '$rating' }, count: { $sum: 1 } } },
+    ]),
+  ]);
+  res.set('Cache-Control', 'public, max-age=300');
+  res.status(200).json({
+    data: {
+      cars,
+      completedTrips,
+      ratings: ratings?.count || 0,
+      avgRating: ratings ? Math.round(ratings.avg * 10) / 10 : null,
+    },
+  });
+});
+
+// GET /api/portal/vehicle-photos/:id — the photo itself as an image (streamed from S3), so the site can
+// use it directly in <img src> and the browser (and the CDN, for public cars) can cache it. Photos of Active
 // cars are public; a signed-in customer can also see photos of any car from their own trips (so My
 // Trips keeps its pictures even if that car is later taken off the site).
 export const getVehiclePhotoImage = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) {
     return res.status(404).end();
   }
-  const photo = await VehiclePhoto.findOne({ _id: req.params.id, isDeleted: false }, 'vehicle image mimeType').lean();
+  const photo = await VehiclePhoto.findOne({ _id: req.params.id, isDeleted: false }, 'vehicle s3Key image mimeType').lean();
   if (!photo) {
     return res.status(404).end();
   }
@@ -265,13 +323,14 @@ export const getVehiclePhotoImage = asyncHandler(async (req, res) => {
     return res.status(404).end();
   }
 
-  const match = /^data:([^;]+);base64,(.*)$/s.exec(photo.image || '');
-  if (!match) {
+  const file = await readFile(photo, 'image');
+  if (!file) {
     return res.status(404).end();
   }
-  res.set('Content-Type', photo.mimeType || match[1]);
-  res.set('Cache-Control', isPublic ? 'public, max-age=86400' : 'private, max-age=86400');
-  res.send(Buffer.from(match[2], 'base64'));
+  res.set('Content-Type', file.contentType);
+  // A photo id never changes content (a new upload is a new id), so it can be cached for a long time.
+  res.set('Cache-Control', isPublic ? 'public, max-age=604800, immutable' : 'private, max-age=86400');
+  res.send(file.body);
 });
 
 // ---------- Offers (public) ----------
@@ -309,15 +368,17 @@ export const listOffers = asyncHandler(async (req, res) => {
 
 const TRIP_VEHICLE_FIELDS = 'vehicleNo make model year vehicleType transmission fuel';
 const PUBLIC_TRIP_FIELDS =
-  'tripId vehicle startDate startTime endDate endTime amount advance securityDeposit refundAmount couponCode couponDiscount status bookedDate createdBy customerRating customerReview customerRatedAt startedAt endedAt';
+  'tripId vehicle startDate startTime endDate endTime amount advance securityDeposit refundAmount couponCode couponDiscount status bookedDate createdBy rating customerReview customerRatedAt startedAt endedAt';
 
-// Adds the car's photo ids to each trip so My Trips can show what was booked.
+// Adds the car's photo ids to each trip so My Trips can show what was booked. `rating` is only sent
+// once the customer has rated the trip themselves (older trips may carry a rating an admin gave).
 async function withVehiclePhotos(trips) {
   const vehicleIds = [...new Set(trips.map((t) => t.vehicle?._id).filter(Boolean).map(String))];
   const photos = await photosByVehicle(vehicleIds.map((id) => new mongoose.Types.ObjectId(id)));
   return trips.map((t) => {
     const obj = t.toObject ? t.toObject() : t;
     if (obj.vehicle) obj.vehicle.photos = photos.get(String(obj.vehicle._id)) || [];
+    if (!obj.customerRatedAt) delete obj.rating;
     return obj;
   });
 }
@@ -431,8 +492,9 @@ export const ratingValidators = [
   body('review').optional({ checkFalsy: true }).trim().isLength({ max: 500 }).withMessage('Review cannot exceed 500 characters'),
 ];
 
-// POST /api/portal/trips/:id/rating { rating, review? } — after a Completed trip the customer rates the
-// car (once). Kept separate from the admin's own trip rating.
+// POST /api/portal/trips/:id/rating { rating, review? } — after a Completed trip the customer rates it
+// (once). That one rating is the trip's rating and counts towards the car's rating; the review shows on
+// the car's page on the site.
 export const rateTrip = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
@@ -443,11 +505,11 @@ export const rateTrip = asyncHandler(async (req, res) => {
   if (trip.status !== 'Completed') {
     return res.status(400).json({ message: 'You can rate the car once your trip is completed' });
   }
-  if (trip.customerRating) {
+  if (trip.customerRatedAt) {
     return res.status(409).json({ message: 'You have already rated this trip' });
   }
 
-  trip.customerRating = req.body.rating;
+  trip.rating = req.body.rating;
   trip.customerReview = req.body.review || '';
   trip.customerRatedAt = new Date();
   await trip.save();
@@ -460,69 +522,135 @@ export const bookingValidators = [
   body('startTime').matches(TIME_RE).withMessage('Select a start time'),
   body('endDate').matches(DATE_RE).withMessage('Select an end date'),
   body('endTime').matches(TIME_RE).withMessage('Select an end time'),
+  body('couponCode').optional({ checkFalsy: true }).trim().isLength({ max: 30 }).withMessage('Invalid coupon code'),
 ];
 
+// The car and the price of a booking request, worked out here from the car's price per day (never
+// taken from the request). Returns { error, status } or { vehicle, days, amount }.
+async function priceBooking({ vehicle: vehicleId, startDate, startTime, endDate, endTime }) {
+  const start = toInstant(startDate, startTime);
+  const end = toInstant(endDate, endTime);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return { status: 400, error: 'Invalid start or end date' };
+  }
+  if (start < Date.now() - 5 * 60 * 1000) {
+    return { status: 400, error: 'The start date and time must be in the future' };
+  }
+  if (end <= start) {
+    return { status: 400, error: 'The end must be after the start' };
+  }
+  if (end - start > MAX_BOOKING_DAYS * DAY_MS) {
+    return { status: 400, error: `A booking can be at most ${MAX_BOOKING_DAYS} days long` };
+  }
+  const vehicle = await Vehicle.findOne({ _id: vehicleId, isDeleted: false, status: 'Active' });
+  if (!vehicle) {
+    return { status: 400, error: 'This car is not available for booking' };
+  }
+  const days = rentalDays(start, end);
+  return { vehicle, days, amount: vehicle.pricePerDay ? days * vehicle.pricePerDay : 0 };
+}
+
+// POST /api/portal/coupons/validate { code, vehicle, startDate, startTime, endDate, endTime } — checks a
+// coupon code the customer typed in on the booking page and returns the discount it gives on that
+// booking. Everything is checked here (code, dates, whether it's for this customer, usage left) —
+// private coupons work too, they just aren't advertised. The booking itself checks again.
+export const validateCoupon = asyncHandler(async (req, res) => {
+  if (!handleValidation(req, res)) return;
+  if (!req.body.code?.trim()) {
+    return res.status(400).json({ message: 'Enter a coupon code' });
+  }
+  const priced = await priceBooking(req.body);
+  if (priced.error) return res.status(priced.status).json({ message: priced.error });
+
+  await deactivateExpiredCoupons();
+  const { coupon, message } = await couponCodeProblem(req.body.code, req.customer._id);
+  if (!coupon) return res.status(400).json({ message });
+
+  const discount = calculateDiscount(coupon, priced.amount);
+  res.status(200).json({
+    data: {
+      code: coupon.code,
+      discountType: coupon.discountType,
+      value: coupon.value,
+      maxDiscount: coupon.maxDiscount,
+      amount: priced.amount,
+      discount,
+      payable: Math.max(priced.amount - discount, 0),
+    },
+    message: `${coupon.code} applied`,
+  });
+});
+
+export const couponValidators = [...bookingValidators, body('code').optional().trim().isLength({ max: 30 }).withMessage('Invalid coupon code')];
+
 // POST /api/portal/trips — book a car (only when ENABLE_PORTAL_BOOKING=true). The amount is always
-// worked out here from the car's price per day (never taken from the request). The trip starts
-// "Yet to Start" like any admin-created trip.
+// worked out here; an optional couponCode is checked and its use reserved here too. The trip starts
+// "Yet to Start" like any admin-created trip, its booking source is Direct, and it gets its start/end
+// OTPs straight away.
 export const createBooking = asyncHandler(async (req, res) => {
   if (!BOOKING_ENABLED) {
     return res.status(403).json({ message: 'Online booking is not available. Please contact us to book a car.' });
   }
   if (!handleValidation(req, res)) return;
 
-  const { vehicle: vehicleId, startDate, startTime, endDate, endTime } = req.body;
-  const start = toInstant(startDate, startTime);
-  const end = toInstant(endDate, endTime);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    return res.status(400).json({ message: 'Invalid start or end date' });
-  }
-  if (start < Date.now() - 5 * 60 * 1000) {
-    return res.status(400).json({ message: 'The start date and time must be in the future' });
-  }
-  if (end <= start) {
-    return res.status(400).json({ message: 'The end must be after the start' });
-  }
-  if (end - start > MAX_BOOKING_DAYS * DAY_MS) {
-    return res.status(400).json({ message: `A booking can be at most ${MAX_BOOKING_DAYS} days long` });
-  }
+  const priced = await priceBooking(req.body);
+  if (priced.error) return res.status(priced.status).json({ message: priced.error });
+  const { vehicle, days, amount } = priced;
+  const { startDate, startTime, endDate, endTime } = req.body;
 
-  const vehicle = await Vehicle.findOne({ _id: vehicleId, isDeleted: false, status: 'Active' });
-  if (!vehicle) {
-    return res.status(400).json({ message: 'This car is not available for booking' });
-  }
   const clash = await bookedVehicleIds(startDate, endDate, vehicle._id);
   if (clash.length) {
     return res.status(409).json({ message: 'This car is already booked for some of those dates. Please pick other dates or another car.' });
   }
 
-  const days = rentalDays(start, end);
-  const amount = vehicle.pricePerDay ? days * vehicle.pricePerDay : 0;
-
-  let trip;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const tripId = await generateUniqueTripId();
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      trip = await Trip.create({
-        tripId,
-        customer: req.customer._id,
-        vehicle: vehicle._id,
-        startDate,
-        startTime,
-        endDate,
-        endTime,
-        amount,
-        status: 'Yet to Start',
-        createdBy: 'customer',
-      });
-      break;
-    } catch (err) {
-      if (err?.code === 11000 && err?.keyPattern?.tripId && attempt < 2) continue;
-      throw err;
+  let couponDoc = null;
+  let couponDiscount = 0;
+  if (req.body.couponCode) {
+    await deactivateExpiredCoupons();
+    const check = await couponCodeProblem(req.body.couponCode, req.customer._id);
+    if (!check.coupon) return res.status(400).json({ message: check.message });
+    // Reserve one use atomically — only succeeds while the coupon is still live and under its limit.
+    couponDoc = await Coupon.findOneAndUpdate(applicableCouponFilter(req.customer._id, new Date(), check.coupon._id), {
+      $inc: { usageCount: 1 },
+    });
+    if (!couponDoc) {
+      return res.status(409).json({ message: 'This coupon has just reached its usage limit or is no longer valid' });
     }
+    couponDiscount = calculateDiscount(couponDoc, amount);
   }
 
+  let trip;
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const tripId = await generateUniqueTripId();
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        trip = await Trip.create({
+          tripId,
+          customer: req.customer._id,
+          vehicle: vehicle._id,
+          startDate,
+          startTime,
+          endDate,
+          endTime,
+          amount: Math.max(amount - couponDiscount, 0),
+          status: 'Yet to Start',
+          createdBy: 'customer',
+          source: 'Direct',
+          ...(couponDoc ? { coupon: couponDoc._id, couponCode: couponDoc.code, couponDiscount } : {}),
+        });
+        break;
+      } catch (err) {
+        if (err?.code === 11000 && err?.keyPattern?.tripId && attempt < 2) continue;
+        throw err;
+      }
+    }
+  } catch (err) {
+    if (couponDoc) await Coupon.updateOne({ _id: couponDoc._id }, { $inc: { usageCount: -1 } });
+    throw err;
+  }
+
+  await ensureTripOtps(trip, 'system');
   await trip.populate('vehicle', TRIP_VEHICLE_FIELDS);
   res.status(201).json({ data: trip, days, message: 'Booking confirmed' });
 });

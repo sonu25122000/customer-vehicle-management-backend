@@ -157,9 +157,35 @@ router.post('/auth/change-password', authLimiter, requireCustomerSession, auth.c
  *     security: []
  *     responses:
  *       200: { description: Offers }
+ * /portal/vehicles/{id}/reviews:
+ *   get:
+ *     tags: [Customer Site]
+ *     summary: Customers' ratings and reviews of one car, newest first (first name + initial only)
+ *     security: []
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: string } }
+ *     responses:
+ *       200: { description: Reviews }
+ * /portal/testimonials:
+ *   get:
+ *     tags: [Customer Site]
+ *     summary: Home page reviews carousel (managed in the admin portal's Home Carousel page)
+ *     security: []
+ *     responses:
+ *       200: { description: Slides }
+ * /portal/stats:
+ *   get:
+ *     tags: [Customer Site]
+ *     summary: Home page headline numbers (cars, completed trips, average rating)
+ *     security: []
+ *     responses:
+ *       200: { description: Stats }
  */
 router.get('/vehicles', portal.vehicleListValidators, portal.listVehicles);
 router.get('/vehicles/:id', portal.getVehicle);
+router.get('/vehicles/:id/reviews', portal.listVehicleReviews);
+router.get('/testimonials', portal.listTestimonials);
+router.get('/stats', portal.getSiteStats);
 router.get('/vehicle-photos/:id', optionalCustomer, portal.getVehiclePhotoImage);
 router.get('/offers', optionalCustomer, portal.listOffers);
 
@@ -210,7 +236,7 @@ router.get('/offers', optionalCustomer, portal.listOffers);
  *       200: { description: Trips }
  *   post:
  *     tags: [Customer Site]
- *     summary: Book a car — only when ENABLE_PORTAL_BOOKING=true, otherwise 403
+ *     summary: Book a car (booking source Direct) — only when ENABLE_PORTAL_BOOKING=true, otherwise 403
  *     requestBody:
  *       required: true
  *       content:
@@ -291,6 +317,31 @@ router.patch('/profile', requireCustomer, portal.profileValidators, portal.updat
 router.post('/documents', requireCustomer, uploadCustomerDocuments, handleUploadErrors, portal.uploadDocuments);
 router.get('/trips', requireCustomer, portal.listTrips);
 router.post('/trips', requireCustomer, portal.bookingValidators, portal.createBooking);
+/**
+ * @swagger
+ * /portal/coupons/validate:
+ *   post:
+ *     tags: [Customer Site]
+ *     summary: Check a coupon code for a booking and get its discount (the booking checks it again)
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [code, vehicle, startDate, startTime, endDate, endTime]
+ *             properties:
+ *               code: { type: string }
+ *               vehicle: { type: string }
+ *               startDate: { type: string, format: date }
+ *               startTime: { type: string }
+ *               endDate: { type: string, format: date }
+ *               endTime: { type: string }
+ *     responses:
+ *       200: { description: '{ code, amount, discount, payable, ... }' }
+ *       400: { description: Invalid / expired / not for this customer / used up }
+ */
+router.post('/coupons/validate', authLimiter, requireCustomer, portal.couponValidators, portal.validateCoupon);
 router.get('/trips/:id', requireCustomer, portal.getTrip);
 router.post('/trips/:id/start', otpLimiter, requireCustomer, portal.otpValidators, portal.startTrip);
 router.post('/trips/:id/end', otpLimiter, requireCustomer, portal.otpValidators, portal.endTrip);

@@ -1,9 +1,13 @@
 {
   "functions": {
     "api/index.js": {
-      "includeFiles": "{node_modules/swagger-ui-dist/**,src/routes/**}"
+      "includeFiles": "{node_modules/swagger-ui-dist/**,src/routes/**}",
+      "maxDuration": 60
     }
   },
+  "crons": [
+    { "path": "/api/reports/cron", "schedule": "35 18 * * *" }
+  ],
   "rewrites": [
     { "source": "/(.*)", "destination": "/api/index" }
   ]

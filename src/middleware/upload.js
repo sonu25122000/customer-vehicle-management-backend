@@ -3,14 +3,13 @@ import multer from 'multer';
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const DOCUMENT_TYPES = new Set([...IMAGE_TYPES, 'application/pdf']);
 
-// Files are held in memory and converted to base64 for storage directly on the Mongo
-// document (no filesystem/object storage configured). The frontend compresses every image
-// down to ~1-1.5MB before it ever reaches this middleware (see utils/compressImage.js) —
-// this limit is the hard backstop: anything still over it (a large PDF, or compression
-// failing for any reason) is rejected rather than stored, keeping embedded files well under
-// MongoDB's 16MB per-document limit.
-const PHOTO_MAX_BYTES = 1.5 * 1024 * 1024; // 1.5MB per vehicle photo, post client-side compression
-const DOCUMENT_MAX_BYTES = 1.5 * 1024 * 1024; // 1.5MB per customer document
+// Files are held in memory just long enough to be uploaded to S3 (utils/storage.js). Every file is
+// capped at 2MB. The apps compress images below that before uploading (utils/compressImage.js) and
+// send one file per request, which keeps each request under the hosting platform's body limit (4.5MB
+// on Vercel); this limit is the hard backstop for anything still over it (e.g. a large PDF).
+export const MAX_FILE_BYTES = 2 * 1024 * 1024;
+const PHOTO_MAX_BYTES = MAX_FILE_BYTES;
+const DOCUMENT_MAX_BYTES = MAX_FILE_BYTES;
 
 function fileFilterFor(allowedTypes) {
   return (req, file, cb) => {
@@ -56,7 +55,7 @@ export const uploadVehicleDocuments = multer({
 export function handleUploadErrors(err, req, res, next) {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ message: 'File is too large (max 1.5MB after compression)' });
+      return res.status(400).json({ message: 'File is too large — the maximum is 2 MB' });
     }
     return res.status(400).json({ message: err.message });
   }

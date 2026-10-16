@@ -3,7 +3,7 @@ import Vehicle from '../models/Vehicle.js';
 import VehicleDocument, { VEHICLE_DOCUMENT_TYPES } from '../models/VehicleDocument.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { objectKey, storeFile, withFileUrls } from '../utils/storage.js';
-import { vehicleDocumentFileName } from '../utils/fileNames.js';
+import { vehicleDocumentFileName, vehicleDocumentKeyParts } from '../utils/fileNames.js';
 import { holdIfIncomplete } from '../utils/media.js';
 
 const VEHICLE_POPULATE = 'vehicleNo make model';
@@ -67,7 +67,7 @@ export const uploadVehicleDocuments = asyncHandler(async (req, res) => {
   const now = new Date();
   const named = uploads.map((u) => ({ ...u, fileName: vehicleDocumentFileName(vehicle, u.type, u.file, now) }));
   const keys = await Promise.all(
-    named.map(({ file, fileName }) => storeFile(file, objectKey('vehicles', String(vehicle._id), 'documents', fileName)))
+    named.map(({ type, file, fileName }) => storeFile(file, objectKey(...vehicleDocumentKeyParts(vehicle, type, fileName))))
   );
 
   await VehicleDocument.updateMany(

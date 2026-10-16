@@ -11,7 +11,7 @@ import { applicableCouponFilter, calculateDiscount, couponCodeProblem, couponsUs
 import { documentSummary, syncProfileVerification } from '../utils/verification.js';
 import { consumeTripOtp, ensureTripOtps, OTP_LENGTH } from '../utils/tripOtp.js';
 import { objectKey, readFile, storeFile } from '../utils/storage.js';
-import { customerProfilePhotoFileName } from '../utils/fileNames.js';
+import { customerProfilePhotoFileName, customerProfilePhotoKeyParts } from '../utils/fileNames.js';
 import { generateUniqueTripId } from './tripController.js';
 import { storeCustomerDocuments } from './customerDocumentController.js';
 import { publicCustomer } from './portalAuthController.js';
@@ -132,7 +132,7 @@ export const uploadProfilePhoto = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'Choose a photo to upload' });
   }
   const customer = req.customer;
-  const key = await storeFile(req.file, objectKey('customers', String(customer._id), 'profile', customerProfilePhotoFileName(customer, req.file)));
+  const key = await storeFile(req.file, objectKey(...customerProfilePhotoKeyParts(customer, customerProfilePhotoFileName(customer, req.file))));
   customer.profilePhoto = { s3Key: key, mimeType: req.file.mimetype, updatedAt: new Date() };
   await customer.save();
   res.status(200).json({ data: publicCustomer(customer), message: 'Profile photo updated' });

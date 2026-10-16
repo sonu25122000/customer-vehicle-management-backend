@@ -97,3 +97,45 @@ export function vehiclePhotoFileName(vehicle, slot, file) {
   const random = crypto.randomBytes(4).toString('hex');
   return `${shortVehicleNo(vehicle.vehicleNo)}_${modelName(vehicle.model)}_${side}_image_${random}.${extensionFor(file)}`;
 }
+
+// ---- Folders in the S3 bucket ----
+// Files are grouped by the vehicle / customer they belong to, then by what they are, so the bucket can
+// be browsed by hand (after the optional S3_PREFIX folder):
+//
+//   vehicles/KA53MN3925/photos/KA533925_Baleno_front_image_9103299e.jpg
+//   vehicles/KA53MN3925/documents/rc/KA53MN3925_MARUTI-BALENO_RC_20261015-103000.pdf
+//   vehicles/KA53MN3925/documents/insurance/...
+//   customers/9876543210_RAVI-KUMAR/documents/aadhaar/RAVI-KUMAR_9876543210_AADHAAR_20261015-103000.jpg
+//   customers/9876543210_RAVI-KUMAR/documents/driving-licence/...
+//   customers/9876543210_RAVI-KUMAR/documents/selfie/...
+//   customers/9876543210_RAVI-KUMAR/profile-photo/RAVI-KUMAR_9876543210_PROFILE_20261015-103000.jpg
+//
+// Each row stores its own full key (s3Key), so a later rename of the customer or vehicle only changes
+// where new files go — files already uploaded stay readable where they are.
+
+const CUSTOMER_TYPE_FOLDERS = { selfie: 'selfie', drivingLicence: 'driving-licence', aadhaar: 'aadhaar', other: 'other' };
+
+function vehicleFolder(vehicle) {
+  return ['vehicles', slug(vehicle.vehicleNo, 16)];
+}
+
+function customerFolder(customer) {
+  return ['customers', `${customer.mobile1 || 'NOMOBILE'}_${slug(customer.name)}`];
+}
+
+// The parts of an object key (folders + file name), for storage.objectKey(...).
+export function vehiclePhotoKeyParts(vehicle, slot, file) {
+  return [...vehicleFolder(vehicle), 'photos', vehiclePhotoFileName(vehicle, slot, file)];
+}
+
+export function vehicleDocumentKeyParts(vehicle, type, fileName) {
+  return [...vehicleFolder(vehicle), 'documents', String(type).toLowerCase(), fileName];
+}
+
+export function customerDocumentKeyParts(customer, type, fileName) {
+  return [...customerFolder(customer), 'documents', CUSTOMER_TYPE_FOLDERS[type] || slug(type).toLowerCase(), fileName];
+}
+
+export function customerProfilePhotoKeyParts(customer, fileName) {
+  return [...customerFolder(customer), 'profile-photo', fileName];
+}

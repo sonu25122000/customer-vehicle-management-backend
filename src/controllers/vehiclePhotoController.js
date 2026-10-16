@@ -3,7 +3,7 @@ import Vehicle from '../models/Vehicle.js';
 import VehiclePhoto, { MAIN_PHOTO_SLOTS, MAX_ADDITIONAL_PHOTOS } from '../models/VehiclePhoto.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { objectKey, storeFile, withFileUrls } from '../utils/storage.js';
-import { vehiclePhotoFileName } from '../utils/fileNames.js';
+import { vehiclePhotoKeyParts } from '../utils/fileNames.js';
 import { holdIfIncomplete } from '../utils/media.js';
 
 const VEHICLE_POPULATE = 'vehicleNo make model';
@@ -73,7 +73,7 @@ export const uploadVehiclePhotos = asyncHandler(async (req, res) => {
   // Files go to S3 first, so a failed upload leaves the vehicle's current photos untouched.
   const uploads = [...mainUploads, ...additionalUploads];
   const keys = await Promise.all(
-    uploads.map(({ slot, file }) => storeFile(file, objectKey('vehicles', String(vehicle._id), 'photos', vehiclePhotoFileName(vehicle, slot, file))))
+    uploads.map(({ slot, file }) => storeFile(file, objectKey(...vehiclePhotoKeyParts(vehicle, slot, file))))
   );
 
   if (mainUploads.length) {

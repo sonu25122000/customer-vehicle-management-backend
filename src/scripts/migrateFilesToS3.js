@@ -14,7 +14,13 @@ import VehiclePhoto from '../models/VehiclePhoto.js';
 import Customer from '../models/Customer.js';
 import Vehicle from '../models/Vehicle.js';
 import { isS3Configured, objectKey, storeFile } from '../utils/storage.js';
-import { customerDocumentFileName, vehicleDocumentFileName, vehiclePhotoFileName } from '../utils/fileNames.js';
+import {
+  customerDocumentFileName,
+  customerDocumentKeyParts,
+  vehicleDocumentFileName,
+  vehicleDocumentKeyParts,
+  vehiclePhotoKeyParts,
+} from '../utils/fileNames.js';
 
 const DRY_RUN = process.argv.includes('--dry');
 
@@ -76,24 +82,18 @@ async function main() {
   }
 
   const results = [
-    await migrate('Customer documents', CustomerDocument, 'file', async (row, file) =>
-      objectKey(
-        'customers',
-        String(row.customer),
-        'documents',
-        row.fileName || customerDocumentFileName(await customerFor(row.customer), row.type, file, row.createdAt)
-      )
-    ),
-    await migrate('Vehicle documents', VehicleDocument, 'file', async (row, file) =>
-      objectKey(
-        'vehicles',
-        String(row.vehicle),
-        'documents',
-        row.fileName || vehicleDocumentFileName(await vehicleFor(row.vehicle), row.type, file, row.createdAt)
-      )
-    ),
+    await migrate('Customer documents', CustomerDocument, 'file', async (row, file) => {
+      const customer = await customerFor(row.customer);
+      const fileName = row.fileName || customerDocumentFileName(customer, row.type, file, row.createdAt);
+      return objectKey(...customerDocumentKeyParts(customer, row.type, fileName));
+    }),
+    await migrate('Vehicle documents', VehicleDocument, 'file', async (row, file) => {
+      const vehicle = await vehicleFor(row.vehicle);
+      const fileName = row.fileName || vehicleDocumentFileName(vehicle, row.type, file, row.createdAt);
+      return objectKey(...vehicleDocumentKeyParts(vehicle, row.type, fileName));
+    }),
     await migrate('Vehicle photos', VehiclePhoto, 'image', async (row, file) =>
-      objectKey('vehicles', String(row.vehicle), 'photos', vehiclePhotoFileName(await vehicleFor(row.vehicle), row.slot, file))
+      objectKey(...vehiclePhotoKeyParts(await vehicleFor(row.vehicle), row.slot, file))
     ),
   ];
 

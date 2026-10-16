@@ -3,7 +3,7 @@ import Customer from '../models/Customer.js';
 import CustomerDocument, { CUSTOMER_DOCUMENT_TYPES } from '../models/CustomerDocument.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { objectKey, storeFile, withFileUrls } from '../utils/storage.js';
-import { customerDocumentFileName } from '../utils/fileNames.js';
+import { customerDocumentFileName, customerDocumentKeyParts } from '../utils/fileNames.js';
 import { syncProfileVerification } from '../utils/verification.js';
 
 const CUSTOMER_POPULATE = 'name mobile1 profileVerified';
@@ -55,7 +55,7 @@ export async function storeCustomerDocuments(customer, uploads, uploadedBy) {
   // Files go to S3 first, so a failed upload leaves the customer's current documents untouched.
   const named = uploads.map((u) => ({ ...u, fileName: customerDocumentFileName(customer, u.type, u.file, now) }));
   const keys = await Promise.all(
-    named.map(({ file, fileName }) => storeFile(file, objectKey('customers', String(customer._id), 'documents', fileName)))
+    named.map(({ type, file, fileName }) => storeFile(file, objectKey(...customerDocumentKeyParts(customer, type, fileName))))
   );
   await CustomerDocument.updateMany(
     { customer: customer._id, type: { $in: uploads.map((u) => u.type) }, isDeleted: false },

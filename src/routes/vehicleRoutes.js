@@ -11,6 +11,8 @@ import {
   vehicleValidators,
   updateVehicleStatus,
   statusValidators,
+  mapLinkValidators,
+  resolveVehicleMapLink,
 } from '../controllers/vehicleController.js';
 import { requireAuth, requireRole, canDelete } from '../middleware/auth.js';
 
@@ -152,6 +154,22 @@ router.post('/', canEdit, vehicleValidators, createVehicle);
  *       403: { $ref: '#/components/responses/Forbidden' }
  *       404: { $ref: '#/components/responses/NotFound' }
  */
+/**
+ * @swagger
+ * /vehicles/map-link:
+ *   post:
+ *     tags: [Vehicles]
+ *     summary: Read the location out of a Google Maps link (short share links are followed) — for a vehicle's parking location
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { type: object, required: [url], properties: { url: { type: string, example: 'https://maps.app.goo.gl/abc123' } } }
+ *     responses:
+ *       200: { description: '{ lat, lng, placeName }' }
+ *       400: { description: Not a Google Maps link, or no location in it }
+ */
+router.post('/map-link', canEdit, mapLinkValidators, resolveVehicleMapLink);
 router.get('/:id', getVehicle);
 router.put('/:id', canEdit, vehicleValidators, updateVehicle);
 /**

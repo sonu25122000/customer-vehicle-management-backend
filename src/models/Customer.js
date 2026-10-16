@@ -75,6 +75,13 @@ const customerSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Profile picture the customer uploads on the customer site (stored in S3 — utils/storage.js). Only
+    // the object key is kept here; the site loads it through GET /api/portal/profile/photo.
+    profilePhoto: {
+      s3Key: { type: String },
+      mimeType: { type: String },
+      updatedAt: { type: Date },
+    },
     // Verification documents (selfie, driving licence, Aadhaar, other) live in their own
     // CustomerDocument collection, linked back by customer id — see models/CustomerDocument.js.
     isDeleted: {

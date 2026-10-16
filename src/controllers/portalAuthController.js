@@ -67,6 +67,8 @@ export function publicCustomer(c) {
     rating: c.rating,
     createdBy: c.createdBy,
     mustChangePassword: Boolean(c.mustChangePassword),
+    // Changes whenever a new picture is uploaded, so the site can cache-bust its <img> URL.
+    photoVersion: c.profilePhoto?.s3Key && c.profilePhoto.updatedAt ? new Date(c.profilePhoto.updatedAt).getTime() : null,
     createdAt: c.createdAt,
   };
 }

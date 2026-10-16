@@ -1,7 +1,7 @@
 import { body, query, validationResult } from 'express-validator';
 import Coupon from '../models/Coupon.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { applicableCouponFilter, deactivateExpiredCoupons, isOnTimeSlot, TIME_SLOT_MINUTES } from '../utils/couponRules.js';
+import { applicableCouponFilter, couponsUsedUpBy, deactivateExpiredCoupons, isOnTimeSlot, TIME_SLOT_MINUTES } from '../utils/couponRules.js';
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -52,6 +52,16 @@ export const couponValidators = [
     .isInt({ min: 1, max: 1000000 })
     .withMessage('Maximum usage must be a whole number of at least 1')
     .toInt(),
+  // Optional — blank/absent means a customer can use it any number of times (within maxUsage).
+  body('perCustomerLimit')
+    .optional({ checkFalsy: true })
+    .isInt({ min: 1, max: 1000 })
+    .withMessage('Uses per customer must be a whole number of at least 1')
+    .toInt()
+    .custom((value, { req }) => {
+      if (req.body.maxUsage && value > Number(req.body.maxUsage)) throw new Error('Uses per customer cannot be more than the maximum usage');
+      return true;
+    }),
   body('startAt')
     .notEmpty()
     .withMessage('Start date/time is required')
@@ -140,9 +150,10 @@ export const getCouponStats = asyncHandler(async (_req, res) => {
 export const applicableValidators = [
   query('customer').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid customer'),
   query('current').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid current coupon'),
+  query('trip').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid trip'),
 ];
 
-const APPLICABLE_FIELDS = 'code discountType value maxDiscount applicability startAt expiresAt maxUsage usageCount';
+const APPLICABLE_FIELDS = 'code discountType value maxDiscount applicability startAt expiresAt maxUsage usageCount perCustomerLimit';
 
 // GET /api/coupons/applicable?customer=<id>&current=<couponId> — coupons the trip form offers for this
 // customer: live right now (active, inside its start/expiry window), not used up, and either open to
@@ -162,7 +173,12 @@ export const listApplicableCoupons = asyncHandler(async (req, res) => {
     req.query.current ? Coupon.findById(req.query.current).select(APPLICABLE_FIELDS).lean() : null,
   ]);
 
-  const data = applicable.map((c) => ({ ...c, isCurrent: false, stillApplicable: true }));
+  // Coupons this customer has already used as many times as each allows (perCustomerLimit) aren't
+  // offered — `trip` (the trip being edited) doesn't count as a use.
+  const usedUp = await couponsUsedUpBy(applicable, req.query.customer, req.query.trip);
+  const data = applicable
+    .filter((c) => !usedUp.has(String(c._id)))
+    .map((c) => ({ ...c, isCurrent: false, stillApplicable: true }));
   if (current) {
     const index = data.findIndex((c) => String(c._id) === String(current._id));
     if (index >= 0) data[index].isCurrent = true;
@@ -184,7 +200,8 @@ export const getCoupon = asyncHandler(async (req, res) => {
 export const createCoupon = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage, isActive, isPublic } = req.body;
+  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage, perCustomerLimit, isActive, isPublic } =
+    req.body;
 
   if (new Date(expiresAt) <= new Date()) {
     return res.status(400).json({ message: 'Expiry date/time must be in the future' });
@@ -205,6 +222,7 @@ export const createCoupon = asyncHandler(async (req, res) => {
     startAt,
     expiresAt,
     maxUsage: maxUsage || undefined,
+    perCustomerLimit: perCustomerLimit || undefined,
     usageCount: 0,
     // Honour the form's Active checkbox. Leaving it out keeps the schema default (active).
     isActive: isActive === undefined ? true : isActive,
@@ -220,7 +238,8 @@ export const createCoupon = asyncHandler(async (req, res) => {
 export const updateCoupon = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage, isActive, isPublic } = req.body;
+  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage, perCustomerLimit, isActive, isPublic } =
+    req.body;
 
   const duplicate = await findDuplicate(code, req.params.id);
   if (duplicate) {
@@ -251,6 +270,7 @@ export const updateCoupon = asyncHandler(async (req, res) => {
     startAt,
     expiresAt,
     maxUsage: maxUsage || undefined,
+    perCustomerLimit: perCustomerLimit || undefined,
     isActive: isActive === undefined ? coupon.isActive : isActive,
     isPublic: isPublic === undefined ? coupon.isPublic : isPublic,
   });

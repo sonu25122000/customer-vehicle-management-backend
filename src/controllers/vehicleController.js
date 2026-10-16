@@ -7,6 +7,7 @@ import VehiclePhoto from '../models/VehiclePhoto.js';
 import VehicleDocument from '../models/VehicleDocument.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { vehicleMediaSummary, missingForActive } from '../utils/media.js';
+import { isGoogleMapsUrl, resolveMapLink } from '../utils/mapLink.js';
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -142,6 +143,24 @@ export const vehicleValidators = [
     .isFloat({ min: 1, max: 1000000 })
     .withMessage('Price per day must be a positive amount')
     .toFloat(),
+  // Optional parking location: an address and/or a pin (lat + lng together).
+  body('parkingLocation').optional({ nullable: true }).isObject().withMessage('Invalid parking location'),
+  body('parkingLocation.address')
+    .optional({ nullable: true })
+    .isString()
+    .trim()
+    .isLength({ max: 200 })
+    .withMessage('Parking location cannot exceed 200 characters'),
+  body('parkingLocation.lat').optional({ values: 'falsy' }).isFloat({ min: -90, max: 90 }).withMessage('Invalid map location').toFloat(),
+  body('parkingLocation.lng')
+    .optional({ values: 'falsy' })
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Invalid map location')
+    .toFloat()
+    .custom((lng, { req }) => {
+      if (!Number.isFinite(Number(req.body.parkingLocation?.lat))) throw new Error('Invalid map location');
+      return true;
+    }),
   body('ownerName').trim().notEmpty().withMessage('Owner/Host name is required'),
   body('ownerMobile')
     .trim()
@@ -150,6 +169,17 @@ export const vehicleValidators = [
     .matches(/^[0-9]{10}$/)
     .withMessage('Owner mobile must be exactly 10 digits'),
 ];
+
+// The parking location to store from a request body: { address, lat?, lng? }, or undefined when the
+// body doesn't mention it (so an older client's update leaves it alone).
+function parkingLocationFrom(body) {
+  if (!('parkingLocation' in body)) return undefined;
+  const loc = body.parkingLocation || {};
+  const lat = Number(loc.lat);
+  const lng = Number(loc.lng);
+  const pinned = loc.lat !== '' && loc.lat != null && loc.lng !== '' && loc.lng != null && Number.isFinite(lat) && Number.isFinite(lng);
+  return { address: String(loc.address || '').trim(), ...(pinned ? { lat, lng } : {}) };
+}
 
 function handleValidation(req, res) {
   const errors = validationResult(req);
@@ -291,6 +321,7 @@ export const listVehicles = asyncHandler(async (req, res) => {
           pricePerDay: 1,
           ownerName: 1,
           ownerMobile: 1,
+          parkingLocation: 1,
           isDeleted: 1,
           createdAt: 1,
           updatedAt: 1,
@@ -386,9 +417,11 @@ async function findDuplicate(vehicleNo, excludeId) {
 
 // A vehicle can only go Active once all 4 photo sides, the RC and the insurance are on file
 // (utils/media.js missingForActive) — a freshly created vehicle never has any yet, so it can never be
-// created Active either. Returns the error message, or null when the status change is fine.
-async function activationProblem(vehicleId, nextStatus) {
-  if (nextStatus !== 'Active') return null;
+// created Active either. Only checked when the vehicle is being switched *to* Active: a vehicle that's
+// already Active (e.g. one activated before this rule existed) can still be edited or moved to On Hold /
+// Inactive. Returns the error message, or null when the status change is fine.
+async function activationProblem(vehicleId, nextStatus, currentStatus) {
+  if (nextStatus !== 'Active' || currentStatus === 'Active') return null;
   const missing = await missingForActive(vehicleId);
   return missing.length ? `Upload the ${missing.join(', ')} before setting the vehicle to Active` : null;
 }
@@ -419,6 +452,7 @@ export const createVehicle = asyncHandler(async (req, res) => {
     pricePerDay: pricePerDay || undefined,
     ownerName,
     ownerMobile,
+    parkingLocation: parkingLocationFrom(req.body),
   });
   res.status(201).json({ data: vehicle, message: 'Vehicle created successfully' });
 });
@@ -443,7 +477,7 @@ export const updateVehicle = asyncHandler(async (req, res) => {
   // Status is optional here — the admin portal changes it through PATCH /:id/status; without one the
   // vehicle keeps its current status.
   const nextStatus = status || vehicle.status || 'On Hold';
-  const statusError = await activationProblem(vehicle._id, nextStatus);
+  const statusError = await activationProblem(vehicle._id, nextStatus, vehicle.status);
   if (statusError) return res.status(400).json({ message: statusError });
 
   vehicle.set({
@@ -460,12 +494,43 @@ export const updateVehicle = asyncHandler(async (req, res) => {
     ownerName,
     ownerMobile,
   });
+  const parkingLocation = parkingLocationFrom(req.body);
+  if (parkingLocation) vehicle.parkingLocation = parkingLocation;
   await vehicle.save();
 
   res.status(200).json({
     data: { ...vehicle.toObject(), ...(await vehicleMediaSummary(vehicle._id)) },
     message: 'Vehicle updated successfully',
   });
+});
+
+export const mapLinkValidators = [
+  body('url')
+    .trim()
+    .notEmpty()
+    .withMessage('Paste a Google Maps link')
+    .isLength({ max: 2000 })
+    .withMessage('Link is too long')
+    .custom((url) => {
+      if (!isGoogleMapsUrl(url)) throw new Error('Paste a link from Google Maps (maps.google.com or maps.app.goo.gl)');
+      return true;
+    }),
+];
+
+// POST /api/vehicles/map-link { url } — the pin in a Google Maps link (short share links are followed),
+// for the vehicle form's parking location: { lat, lng, placeName }.
+export const resolveVehicleMapLink = asyncHandler(async (req, res) => {
+  if (!handleValidation(req, res)) return;
+  let place = null;
+  try {
+    place = await resolveMapLink(req.body.url);
+  } catch {
+    return res.status(502).json({ message: "Couldn't open that Google Maps link. Please try again, or copy the link again from Google Maps." });
+  }
+  if (!place) {
+    return res.status(400).json({ message: 'No location found in that link. Drop a pin on Google Maps, then use Share → Copy link.' });
+  }
+  res.status(200).json({ data: place });
 });
 
 export const statusValidators = [body('status').isIn(VEHICLE_STATUSES).withMessage('Invalid vehicle status')];
@@ -480,7 +545,7 @@ export const updateVehicleStatus = asyncHandler(async (req, res) => {
   if (!vehicle) {
     return res.status(404).json({ message: 'Vehicle not found' });
   }
-  const statusError = await activationProblem(vehicle._id, req.body.status);
+  const statusError = await activationProblem(vehicle._id, req.body.status, vehicle.status);
   if (statusError) return res.status(400).json({ message: statusError });
 
   vehicle.status = req.body.status;

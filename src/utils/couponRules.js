@@ -1,4 +1,6 @@
+import mongoose from 'mongoose';
 import Coupon from '../models/Coupon.js';
+import Trip from '../models/Trip.js';
 
 // Rules shared by the coupon module (validation / applicable list) and the trip module
 // (validating and redeeming a coupon when a trip is booked), kept in one place so "is this
@@ -36,6 +38,42 @@ export function applicableCouponFilter(customerId, now = new Date(), couponId) {
   return filter;
 }
 
+// How many times a customer has used a coupon: their trips carrying it, not counting cancelled ones
+// (a cancelled booking gives the customer their use back). `excludeTripId` leaves out the trip being
+// edited.
+export function customerCouponUses(couponId, customerId, excludeTripId) {
+  const filter = { coupon: couponId, customer: customerId, isDeleted: false, status: { $ne: 'Cancelled' } };
+  if (excludeTripId) filter._id = { $ne: excludeTripId };
+  return Trip.countDocuments(filter);
+}
+
+export function perCustomerLimitMessage(coupon) {
+  return coupon.perCustomerLimit === 1
+    ? 'This coupon can be used only once per customer, and it has already been used on this account'
+    : `This coupon can be used ${coupon.perCustomerLimit} times per customer, and this account has used it up`;
+}
+
+// The per-customer limit (Coupon.perCustomerLimit): null when `customerId` can still use the coupon,
+// otherwise the reason they can't.
+export async function perCustomerProblem(coupon, customerId, excludeTripId) {
+  if (!coupon?.perCustomerLimit || !customerId) return null;
+  const used = await customerCouponUses(coupon._id, customerId, excludeTripId);
+  return used >= coupon.perCustomerLimit ? perCustomerLimitMessage(coupon) : null;
+}
+
+// Ids of the coupons (among `coupons`) that `customerId` has used up under their per-customer limit.
+export async function couponsUsedUpBy(coupons, customerId, excludeTripId) {
+  const limited = coupons.filter((c) => c.perCustomerLimit);
+  if (!limited.length || !customerId) return new Set();
+  // An aggregation doesn't cast ids like find() does, so string ids (e.g. from a query string) are converted here.
+  const toId = (id) => new mongoose.Types.ObjectId(String(id));
+  const match = { coupon: { $in: limited.map((c) => c._id) }, customer: toId(customerId), isDeleted: false, status: { $ne: 'Cancelled' } };
+  if (excludeTripId) match._id = { $ne: toId(excludeTripId) };
+  const counts = await Trip.aggregate([{ $match: match }, { $group: { _id: '$coupon', n: { $sum: 1 } } }]);
+  const used = new Map(counts.map((r) => [String(r._id), r.n]));
+  return new Set(limited.filter((c) => (used.get(String(c._id)) || 0) >= c.perCustomerLimit).map((c) => String(c._id)));
+}
+
 // Why a typed-in coupon code can't be used right now, or null if it can. Checked one rule at a time
 // so the customer gets a specific reason instead of a generic "invalid coupon".
 export async function couponCodeProblem(code, customerId, now = new Date()) {
@@ -47,6 +85,8 @@ export async function couponCodeProblem(code, customerId, now = new Date()) {
   if (coupon.startAt > now) return { message: 'This coupon is not active yet' };
   if (coupon.expiresAt < now || !coupon.isActive) return { message: 'This coupon has expired or is no longer active' };
   if (coupon.maxUsage && coupon.usageCount >= coupon.maxUsage) return { message: 'This coupon has reached its usage limit' };
+  const perCustomer = await perCustomerProblem(coupon, customerId);
+  if (perCustomer) return { message: perCustomer };
   return { coupon };
 }
 

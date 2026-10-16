@@ -73,6 +73,13 @@ const vehicleSchema = new mongoose.Schema(
       required: [true, 'Owner mobile is required'],
       trim: true,
     },
+    // Where the car is parked / picked up from — typed in by an admin (address) and optionally pinned
+    // on Google Maps (lat/lng). Shown on the customer site so renters know where to collect the car.
+    parkingLocation: {
+      address: { type: String, trim: true, default: '', maxlength: [200, 'Parking location cannot exceed 200 characters'] },
+      lat: { type: Number, min: -90, max: 90 },
+      lng: { type: Number, min: -180, max: 180 },
+    },
     // Photos and documents (RC / insurance) live in their own VehiclePhoto and VehicleDocument
     // collections, linked back by vehicle id — see models/VehiclePhoto.js and models/VehicleDocument.js.
     isDeleted: {

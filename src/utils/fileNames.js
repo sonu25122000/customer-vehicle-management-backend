@@ -64,6 +64,11 @@ export function customerDocumentFileName(customer, type, file, date = new Date()
   return `${slug(customer.name)}_${customer.mobile1 || 'NOMOBILE'}_${code}_${fileTimestamp(date)}.${extensionFor(file)}`;
 }
 
+// <NAME>_<MOBILE>_PROFILE_<YYYYMMDD-HHmmss>.<ext> — a customer's profile picture.
+export function customerProfilePhotoFileName(customer, file, date = new Date()) {
+  return `${slug(customer.name)}_${customer.mobile1 || 'NOMOBILE'}_PROFILE_${fileTimestamp(date)}.${extensionFor(file)}`;
+}
+
 export function vehicleDocumentFileName(vehicle, type, file, date = new Date()) {
   const code = VEHICLE_TYPE_CODES[type] || slug(type);
   const makeModel = slug([vehicle.make, vehicle.model].filter(Boolean).join(' '));

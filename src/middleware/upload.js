@@ -43,6 +43,12 @@ export const uploadCustomerDocuments = multer({
   { name: 'other', maxCount: 1 },
 ]);
 
+export const uploadProfilePhoto = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: PHOTO_MAX_BYTES },
+  fileFilter: fileFilterFor(IMAGE_TYPES),
+}).single('photo');
+
 export const uploadVehicleDocuments = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: DOCUMENT_MAX_BYTES },

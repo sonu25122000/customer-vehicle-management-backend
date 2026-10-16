@@ -7,10 +7,11 @@ import Vehicle from '../models/Vehicle.js';
 import VehiclePhoto from '../models/VehiclePhoto.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { recordCustomerHistory } from '../utils/customerHistory.js';
-import { applicableCouponFilter, calculateDiscount, couponCodeProblem, deactivateExpiredCoupons } from '../utils/couponRules.js';
+import { applicableCouponFilter, calculateDiscount, couponCodeProblem, couponsUsedUpBy, deactivateExpiredCoupons } from '../utils/couponRules.js';
 import { documentSummary, syncProfileVerification } from '../utils/verification.js';
 import { consumeTripOtp, ensureTripOtps, OTP_LENGTH } from '../utils/tripOtp.js';
-import { readFile } from '../utils/storage.js';
+import { objectKey, readFile, storeFile } from '../utils/storage.js';
+import { customerProfilePhotoFileName } from '../utils/fileNames.js';
 import { generateUniqueTripId } from './tripController.js';
 import { storeCustomerDocuments } from './customerDocumentController.js';
 import { publicCustomer } from './portalAuthController.js';
@@ -35,7 +36,7 @@ const PORTAL_DOCUMENT_TYPES = ['aadhaar', 'drivingLicence', 'selfie'];
 // Trips still holding the car — a new booking can't overlap any of these.
 const ACTIVE_TRIP_STATUSES = ['Yet to Start', 'On Trip'];
 const PHOTO_ORDER = ['front', 'passengerSide', 'driverSide', 'back', 'additional'];
-const PUBLIC_VEHICLE_FIELDS = 'make model year vehicleType vehicleCategory transmission fuel pricePerDay';
+const PUBLIC_VEHICLE_FIELDS = 'make model year vehicleType vehicleCategory transmission fuel pricePerDay parkingLocation';
 
 function handleValidation(req, res) {
   const errors = validationResult(req);
@@ -125,6 +126,38 @@ export const updateProfile = asyncHandler(async (req, res) => {
   res.status(200).json({ data: publicCustomer(customer), message: 'Profile updated successfully' });
 });
 
+// POST /api/portal/profile/photo (multipart: photo) — the customer's profile picture (replaces the old one).
+export const uploadProfilePhoto = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'Choose a photo to upload' });
+  }
+  const customer = req.customer;
+  const key = await storeFile(req.file, objectKey('customers', String(customer._id), 'profile', customerProfilePhotoFileName(customer, req.file)));
+  customer.profilePhoto = { s3Key: key, mimeType: req.file.mimetype, updatedAt: new Date() };
+  await customer.save();
+  res.status(200).json({ data: publicCustomer(customer), message: 'Profile photo updated' });
+});
+
+// DELETE /api/portal/profile/photo — back to the initials avatar. (The file stays in the bucket.)
+export const removeProfilePhoto = asyncHandler(async (req, res) => {
+  const customer = req.customer;
+  customer.profilePhoto = undefined;
+  await customer.save();
+  res.status(200).json({ data: publicCustomer(customer), message: 'Profile photo removed' });
+});
+
+// GET /api/portal/profile/photo — the signed-in customer's own picture, streamed from S3.
+export const getProfilePhoto = asyncHandler(async (req, res) => {
+  const file = req.customer.profilePhoto?.s3Key ? await readFile(req.customer.profilePhoto, 'image') : null;
+  if (!file) {
+    return res.status(404).end();
+  }
+  res.set('Content-Type', file.contentType);
+  // The URL carries ?v=<photoVersion>, so a new upload is a new URL.
+  res.set('Cache-Control', 'private, max-age=604800');
+  res.send(file.body);
+});
+
 // ---------- Verification documents ----------
 
 // POST /api/portal/documents (multipart: any of aadhaar / drivingLicence / selfie)
@@ -195,7 +228,7 @@ export const vehicleListValidators = [
 ];
 
 // GET /api/portal/vehicles?search=&limit=&startDate=&endDate= — Active cars, open to everyone (no login
-// needed to browse). `search` matches make, model, type, category, fuel or transmission (every word
+// needed to browse). `search` matches make, model, type, category, fuel, transmission or parking location (every word
 // has to match something, so "swift petrol" works); with dates, only cars free for them.
 export const listVehicles = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
@@ -218,6 +251,7 @@ export const listVehicles = asyncHandler(async (req, res) => {
           { vehicleCategory: regex },
           { fuel: regex },
           { transmission: regex },
+          { 'parkingLocation.address': regex },
         ],
       };
     });
@@ -335,7 +369,7 @@ export const getVehiclePhotoImage = asyncHandler(async (req, res) => {
 
 // ---------- Offers (public) ----------
 
-const OFFER_FIELDS = 'code discountType value maxDiscount applicability expiresAt';
+const OFFER_FIELDS = 'code discountType value maxDiscount applicability expiresAt perCustomerLimit';
 
 // GET /api/portal/offers — coupons an admin marked "Show on customer site" that are live right now
 // (active, inside their start/expiry window, not used up). Coupons for selected customers only appear
@@ -361,7 +395,11 @@ export const listOffers = asyncHandler(async (req, res) => {
     .sort({ expiresAt: 1 })
     .limit(20)
     .lean();
-  res.status(200).json({ data: offers.map((o) => ({ ...o, forYou: o.applicability === 'selected' })) });
+  // A signed-in customer doesn't see the coupons they've already used as often as each allows.
+  const usedUp = await couponsUsedUpBy(offers, req.customer?._id);
+  res.status(200).json({
+    data: offers.filter((o) => !usedUp.has(String(o._id))).map((o) => ({ ...o, forYou: o.applicability === 'selected' })),
+  });
 });
 
 // ---------- Trips ----------

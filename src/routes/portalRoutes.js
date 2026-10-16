@@ -3,7 +3,7 @@ import rateLimit from 'express-rate-limit';
 import * as auth from '../controllers/portalAuthController.js';
 import * as portal from '../controllers/portalController.js';
 import { requireCustomer, requireCustomerSession, optionalCustomer } from '../middleware/customerAuth.js';
-import { uploadCustomerDocuments, handleUploadErrors } from '../middleware/upload.js';
+import { uploadCustomerDocuments, uploadProfilePhoto, handleUploadErrors } from '../middleware/upload.js';
 
 // Customer site (the separate customer-vehicle-management-user app). Customers sign up / log in with
 // their mobile number; everything except browsing cars and offers requires a customer session — and a
@@ -314,6 +314,36 @@ router.get('/offers', optionalCustomer, portal.listOffers);
  */
 router.get('/profile', requireCustomer, portal.getProfile);
 router.patch('/profile', requireCustomer, portal.profileValidators, portal.updateProfile);
+/**
+ * @swagger
+ * /portal/profile/photo:
+ *   get:
+ *     tags: [Customer Site]
+ *     summary: The signed-in customer's profile picture (image bytes; 404 when none)
+ *     responses:
+ *       200: { description: Image }
+ *       404: { description: No picture }
+ *   post:
+ *     tags: [Customer Site]
+ *     summary: Upload / replace the profile picture (JPEG, PNG or WebP, max 2 MB)
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema: { type: object, properties: { photo: { type: string, format: binary } } }
+ *     responses:
+ *       200: { description: 'Updated customer (photoVersion set)' }
+ *       400: { description: No file / wrong type / too large }
+ *       503: { description: File storage (S3) isn't configured }
+ *   delete:
+ *     tags: [Customer Site]
+ *     summary: Remove the profile picture
+ *     responses:
+ *       200: { description: Removed }
+ */
+router.get('/profile/photo', requireCustomer, portal.getProfilePhoto);
+router.post('/profile/photo', requireCustomer, uploadProfilePhoto, handleUploadErrors, portal.uploadProfilePhoto);
+router.delete('/profile/photo', requireCustomer, portal.removeProfilePhoto);
 router.post('/documents', requireCustomer, uploadCustomerDocuments, handleUploadErrors, portal.uploadDocuments);
 router.get('/trips', requireCustomer, portal.listTrips);
 router.post('/trips', requireCustomer, portal.bookingValidators, portal.createBooking);

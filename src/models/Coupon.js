@@ -52,6 +52,14 @@ const couponSchema = new mongoose.Schema(
       min: [1, 'Maximum usage must be at least 1'],
       validate: { validator: Number.isInteger, message: 'Maximum usage must be a whole number' },
     },
+    // Maximum number of times one customer can use this coupon (e.g. 1 for a FIRSTBOOK coupon that's
+    // valid once per customer). Optional — unset means no per-customer limit. Counted from the
+    // customer's trips that carry the coupon (cancelled trips don't count) — see utils/couponRules.js.
+    perCustomerLimit: {
+      type: Number,
+      min: [1, 'Uses per customer must be at least 1'],
+      validate: { validator: Number.isInteger, message: 'Uses per customer must be a whole number' },
+    },
     // How many trips have used this coupon so far — only ever changed server-side, atomically, when
     // a trip is created with the coupon (see tripController.createTrip); never accepted from a
     // request body.

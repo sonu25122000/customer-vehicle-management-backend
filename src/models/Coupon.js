@@ -57,8 +57,8 @@ const couponSchema = new mongoose.Schema(
     // customer's trips that carry the coupon (cancelled trips don't count) — see utils/couponRules.js.
     perCustomerLimit: {
       type: Number,
-      min: [1, 'Uses per customer must be at least 1'],
-      validate: { validator: Number.isInteger, message: 'Uses per customer must be a whole number' },
+      min: [1, 'Uses per guest must be at least 1'],
+      validate: { validator: Number.isInteger, message: 'Uses per guest must be a whole number' },
     },
     // How many trips have used this coupon so far — only ever changed server-side, atomically, when
     // a trip is created with the coupon (see tripController.createTrip); never accepted from a

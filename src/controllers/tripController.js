@@ -90,7 +90,7 @@ export const listValidators = [
 ];
 
 export const tripValidators = [
-  body('customer').trim().notEmpty().withMessage('Customer is required').isMongoId().withMessage('Invalid customer selected'),
+  body('customer').trim().notEmpty().withMessage('Guest is required').isMongoId().withMessage('Invalid guest selected'),
   body('vehicle').trim().notEmpty().withMessage('Vehicle is required').isMongoId().withMessage('Invalid vehicle selected'),
   body('startDate').notEmpty().withMessage('Start date is required').isISO8601().withMessage('Invalid start date'),
   body('startTime')
@@ -270,7 +270,7 @@ async function assertRefsActive(customerId, vehicleId) {
     Customer.findOne({ _id: customerId, isDeleted: false }),
     Vehicle.findOne({ _id: vehicleId, isDeleted: false }),
   ]);
-  if (!customer) return 'Selected customer does not exist';
+  if (!customer) return 'Selected guest does not exist';
   if (!vehicle) return 'Selected vehicle does not exist';
   return null;
 }
@@ -290,7 +290,7 @@ export const createTrip = asyncHandler(async (req, res) => {
     couponDoc = await Coupon.findOne(applicableCouponFilter(req.body.customer, new Date(), req.body.coupon));
     if (!couponDoc) {
       return res.status(400).json({
-        message: 'This coupon cannot be applied — it is inactive, expired, not valid for this customer, or has reached its usage limit',
+        message: 'This coupon cannot be applied — it is inactive, expired, not valid for this guest, or has reached its usage limit',
       });
     }
     const perCustomer = await perCustomerProblem(couponDoc, req.body.customer);
@@ -467,7 +467,7 @@ export const updateTrip = asyncHandler(async (req, res) => {
       couponDoc = await Coupon.findOne(applicableCouponFilter(existing.customer, new Date(), requestedCouponId));
       if (!couponDoc) {
         return res.status(400).json({
-          message: 'This coupon cannot be applied — it is inactive, expired, not valid for this customer, or has reached its usage limit',
+          message: 'This coupon cannot be applied — it is inactive, expired, not valid for this guest, or has reached its usage limit',
         });
       }
       const perCustomer = await perCustomerProblem(couponDoc, existing.customer, existing._id);
@@ -511,7 +511,7 @@ export const updateTrip = asyncHandler(async (req, res) => {
     const customerDoc = await Customer.findOne({ _id: next.customer, isDeleted: false });
     if (customerDoc?.profileVerified !== 'Accepted') {
       return res.status(400).json({
-        message: "This customer's profile must be Accepted (selfie, driving licence and Aadhaar all approved) before starting this trip",
+        message: "This guest's profile must be Accepted (selfie, driving licence and Aadhaar all approved) before starting this trip",
       });
     }
   }

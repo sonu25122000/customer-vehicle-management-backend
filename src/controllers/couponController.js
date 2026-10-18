@@ -46,10 +46,10 @@ export const couponValidators = [
     .custom((value, { req }) => {
       if (req.body.applicability !== 'selected') return true;
       if (!Array.isArray(value) || value.length === 0) {
-        throw new Error('Select at least one customer');
+        throw new Error('Select at least one guest');
       }
       if (!value.every((id) => /^[0-9a-fA-F]{24}$/.test(id))) {
-        throw new Error('Invalid customer selection');
+        throw new Error('Invalid guest selection');
       }
       return true;
     }),
@@ -63,10 +63,10 @@ export const couponValidators = [
   body('perCustomerLimit')
     .optional({ checkFalsy: true })
     .isInt({ min: 1, max: 1000 })
-    .withMessage('Uses per customer must be a whole number of at least 1')
+    .withMessage('Uses per guest must be a whole number of at least 1')
     .toInt()
     .custom((value, { req }) => {
-      if (req.body.maxUsage && value > Number(req.body.maxUsage)) throw new Error('Uses per customer cannot be more than the maximum usage');
+      if (req.body.maxUsage && value > Number(req.body.maxUsage)) throw new Error('Uses per guest cannot be more than the maximum usage');
       return true;
     }),
   body('startAt')
@@ -155,7 +155,7 @@ export const getCouponStats = asyncHandler(async (_req, res) => {
 });
 
 export const applicableValidators = [
-  query('customer').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid customer'),
+  query('customer').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid guest'),
   query('current').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid current coupon'),
   query('trip').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid trip'),
 ];
@@ -235,8 +235,8 @@ export const createCoupon = asyncHandler(async (req, res) => {
     usageCount: 0,
     // Honour the form's Active checkbox. Leaving it out keeps the schema default (active).
     isActive: isActive === undefined ? true : isActive,
-    // Private unless the admin ticks "Show on customer site".
-    isPublic: Boolean(isPublic),
+    // Private unless the admin ticks 'Show on customer site'. A coupon for selected customers is never public.
+    isPublic: applicability === 'selected' ? false : Boolean(isPublic),
   });
   await coupon.populate('customers', CUSTOMERS_POPULATE);
 
@@ -283,7 +283,8 @@ export const updateCoupon = asyncHandler(async (req, res) => {
     maxUsage: maxUsage || undefined,
     perCustomerLimit: perCustomerLimit || undefined,
     isActive: isActive === undefined ? coupon.isActive : isActive,
-    isPublic: isPublic === undefined ? coupon.isPublic : isPublic,
+    // A coupon for selected customers is never shown on the customer site.
+    isPublic: applicability === 'selected' ? false : isPublic === undefined ? coupon.isPublic : isPublic,
   });
   await coupon.save();
   await coupon.populate('customers', CUSTOMERS_POPULATE);

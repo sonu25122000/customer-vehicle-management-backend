@@ -34,7 +34,7 @@ export const listValidators = [
     .custom((value) => {
       const ids = String(value).split(',').filter(Boolean);
       if (!ids.every((id) => OBJECT_ID_RE.test(id))) {
-        throw new Error('Invalid customer selection');
+        throw new Error('Invalid guest selection');
       }
       return true;
     }),
@@ -142,6 +142,11 @@ export const vehicleValidators = [
     .optional({ checkFalsy: true })
     .isFloat({ min: 1, max: 1000000 })
     .withMessage('Price per day must be a positive amount')
+    .toFloat(),
+  body('pricePerHour')
+    .optional({ checkFalsy: true })
+    .isFloat({ min: 1, max: 100000 })
+    .withMessage('Price per hour must be a positive amount')
     .toFloat(),
   // Optional parking location: an address and/or a pin (lat + lng together).
   body('parkingLocation').optional({ nullable: true }).isObject().withMessage('Invalid parking location'),
@@ -319,6 +324,7 @@ export const listVehicles = asyncHandler(async (req, res) => {
           model: 1,
           year: 1,
           pricePerDay: 1,
+          pricePerHour: 1,
           ownerName: 1,
           ownerMobile: 1,
           parkingLocation: 1,
@@ -430,7 +436,7 @@ async function activationProblem(vehicleId, nextStatus, currentStatus) {
 export const createVehicle = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, make, model, year, pricePerDay, ownerName, ownerMobile } =
+  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, make, model, year, pricePerDay, pricePerHour, ownerName, ownerMobile } =
     req.body;
 
   const duplicate = await findDuplicate(vehicleNo);
@@ -450,6 +456,7 @@ export const createVehicle = asyncHandler(async (req, res) => {
     model,
     year,
     pricePerDay: pricePerDay || undefined,
+    pricePerHour: pricePerHour || undefined,
     ownerName,
     ownerMobile,
     parkingLocation: parkingLocationFrom(req.body),
@@ -461,7 +468,7 @@ export const createVehicle = asyncHandler(async (req, res) => {
 export const updateVehicle = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status, make, model, year, pricePerDay, ownerName, ownerMobile } =
+  const { vehicleNo, vehicleType, vehicleCategory, transmission, fuel, status, make, model, year, pricePerDay, pricePerHour, ownerName, ownerMobile } =
     req.body;
 
   const duplicate = await findDuplicate(vehicleNo, req.params.id);
@@ -491,6 +498,7 @@ export const updateVehicle = asyncHandler(async (req, res) => {
     model,
     year,
     pricePerDay: pricePerDay || undefined,
+    pricePerHour: pricePerHour || undefined,
     ownerName,
     ownerMobile,
   });

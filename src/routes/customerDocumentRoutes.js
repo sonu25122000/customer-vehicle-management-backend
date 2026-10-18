@@ -64,7 +64,8 @@ const canEdit = requireRole('moderator', 'admin');
  *               customer: { type: string, description: Customer ObjectId }
  *               selfie: { type: string, format: binary }
  *               drivingLicence: { type: string, format: binary }
- *               aadhaar: { type: string, format: binary }
+ *               aadhaar: { type: string, format: binary, description: Aadhaar front }
+ *               aadhaarBack: { type: string, format: binary, description: Aadhaar back }
  *               other: { type: string, format: binary }
  *     responses:
  *       200:

@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
-// Email addresses collected by the customer site's "Let us know your email" section (visitors who
-// aren't logged in), for offers and updates. One record per email — subscribing again is a no-op.
+// Email addresses collected by the customer site's "Let us know your email" section, for offers and
+// updates. One record per email — subscribing again is a no-op.
 const subscriberSchema = new mongoose.Schema(
   {
     email: {
@@ -16,6 +16,8 @@ const subscriberSchema = new mongoose.Schema(
       trim: true,
       default: 'home',
     },
+    // When the welcome email went out (unset if email wasn't configured or sending failed).
+    welcomeSentAt: { type: Date },
   },
   { timestamps: true }
 );

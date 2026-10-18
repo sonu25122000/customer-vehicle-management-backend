@@ -1,8 +1,9 @@
 import mongoose from 'mongoose';
 
-export const CUSTOMER_DOCUMENT_TYPES = ['selfie', 'drivingLicence', 'aadhaar', 'other'];
+// 'aadhaar' is the front of the Aadhaar card, 'aadhaarBack' the back.
+export const CUSTOMER_DOCUMENT_TYPES = ['selfie', 'drivingLicence', 'aadhaar', 'aadhaarBack', 'other'];
 // The documents that must all be Approved for the profile to count as verified ('other' is optional).
-export const REQUIRED_DOCUMENT_TYPES = ['selfie', 'drivingLicence', 'aadhaar'];
+export const REQUIRED_DOCUMENT_TYPES = ['selfie', 'drivingLicence', 'aadhaar', 'aadhaarBack'];
 export const DOCUMENT_STATUSES = ['Pending', 'Approved', 'Rejected'];
 
 // One row per uploaded customer verification document, linked to its customer by id. These used to
@@ -17,7 +18,7 @@ const customerDocumentSchema = new mongoose.Schema(
     customer: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Customer',
-      required: [true, 'Customer is required'],
+      required: [true, 'Guest is required'],
     },
     type: {
       type: String,

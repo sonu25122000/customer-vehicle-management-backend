@@ -33,7 +33,7 @@ const customerIdsValidator = query('customerIds')
   .custom((value) => {
     const ids = String(value).split(',').filter(Boolean);
     if (!ids.every((id) => OBJECT_ID_RE.test(id))) {
-      throw new Error('Invalid customer selection');
+      throw new Error('Invalid guest selection');
     }
     return true;
   });
@@ -146,7 +146,7 @@ export const customerValidators = [
     .optional({ checkFalsy: true })
     .isInt({ min: 1, max: 5 })
     .withMessage('Rating must be between 1 and 5'),
-  body('customerType').optional({ checkFalsy: true }).isIn(CUSTOMER_TYPES).withMessage('Invalid customer type'),
+  body('customerType').optional({ checkFalsy: true }).isIn(CUSTOMER_TYPES).withMessage('Invalid guest type'),
   notesValidator,
 ];
 
@@ -219,7 +219,7 @@ export const listCustomerOptions = asyncHandler(async (req, res) => {
 export const getCustomer = asyncHandler(async (req, res) => {
   const customer = await Customer.findById(req.params.id);
   if (!customer) {
-    return res.status(404).json({ message: 'Customer not found' });
+    return res.status(404).json({ message: 'Guest not found' });
   }
   const [withLastBooked] = await attachDerivedFields([customer]);
   res.status(200).json({ data: withLastBooked });
@@ -233,7 +233,7 @@ export const createCustomer = asyncHandler(async (req, res) => {
 
   const duplicateMobile = await Customer.findOne({ mobile1: mobile1.trim(), isDeleted: false });
   if (duplicateMobile) {
-    return res.status(409).json({ message: 'A customer with this mobile number already exists' });
+    return res.status(409).json({ message: 'A guest with this mobile number already exists' });
   }
 
   // A brand new customer can't be rated yet and always starts out unverified — rating and
@@ -254,7 +254,7 @@ export const createCustomer = asyncHandler(async (req, res) => {
   });
 
   const [withDerived] = await attachDerivedFields([customer]);
-  res.status(201).json({ data: withDerived, message: 'Customer created successfully' });
+  res.status(201).json({ data: withDerived, message: 'Guest created successfully' });
 });
 
 // PUT/PATCH /api/customers/:id
@@ -265,12 +265,12 @@ export const updateCustomer = asyncHandler(async (req, res) => {
 
   const existing = await Customer.findOne({ _id: req.params.id, isDeleted: false });
   if (!existing) {
-    return res.status(404).json({ message: 'Customer not found' });
+    return res.status(404).json({ message: 'Guest not found' });
   }
 
   // Mobile 1 is the customer's login and can't be changed once the customer exists.
   if (mobile1 && mobile1 !== existing.mobile1) {
-    return res.status(400).json({ message: "The mobile number can't be changed — it is the customer's login" });
+    return res.status(400).json({ message: "The mobile number can't be changed — it is the guest's login" });
   }
 
   // profileVerified is never set here: it follows the individual document reviews
@@ -292,7 +292,7 @@ export const updateCustomer = asyncHandler(async (req, res) => {
   );
 
   if (!customer) {
-    return res.status(404).json({ message: 'Customer not found' });
+    return res.status(404).json({ message: 'Guest not found' });
   }
 
   // A reset is noted in the edit history, never the password itself.
@@ -305,7 +305,7 @@ export const updateCustomer = asyncHandler(async (req, res) => {
   );
 
   const [withDerived] = await attachDerivedFields([customer]);
-  res.status(200).json({ data: withDerived, message: 'Customer updated successfully' });
+  res.status(200).json({ data: withDerived, message: 'Guest updated successfully' });
 });
 
 // GET /api/customers/:id/history — every profile edit, newest first (by an admin here, or by the
@@ -325,9 +325,9 @@ export const deleteCustomer = asyncHandler(async (req, res) => {
     { new: true }
   );
   if (!customer) {
-    return res.status(404).json({ message: 'Customer not found' });
+    return res.status(404).json({ message: 'Guest not found' });
   }
-  res.status(200).json({ message: 'Customer deleted successfully' });
+  res.status(200).json({ message: 'Guest deleted successfully' });
 });
 
 // GET /api/customers/stats?startDate=&endDate=

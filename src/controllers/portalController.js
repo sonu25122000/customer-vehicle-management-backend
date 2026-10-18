@@ -24,6 +24,8 @@ import { generateUniqueTripId } from './tripController.js';
 import { storeCustomerDocuments } from './customerDocumentController.js';
 import { publicCustomer } from './portalAuthController.js';
 import { firstNameAndInitial, publicTestimonials } from './testimonialController.js';
+import { sendEmail } from '../utils/email.js';
+import { subscriberWelcomeEmail } from '../utils/emailTemplates.js';
 
 // Everything the customer site needs: the signed-in customer's profile, verification documents and
 // trips, plus the public list of cars and offers. Responses never include anything only the business
@@ -39,12 +41,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // Online booking from the customer site is switched off unless ENABLE_PORTAL_BOOKING=true — bookings
 // are made by the team from the admin portal, and the site's "Book a Car" option is hidden to match.
 const BOOKING_ENABLED = process.env.ENABLE_PORTAL_BOOKING === 'true';
-// Customers upload these three; 'other' is admin-only.
-const PORTAL_DOCUMENT_TYPES = ['aadhaar', 'drivingLicence', 'selfie'];
+// Customers upload these (Aadhaar front and back are separate); 'other' is admin-only.
+const PORTAL_DOCUMENT_TYPES = ['aadhaar', 'aadhaarBack', 'drivingLicence', 'selfie'];
 // Trips still holding the car — a new booking can't overlap any of these.
 const ACTIVE_TRIP_STATUSES = ['Yet to Start', 'On Trip'];
 const PHOTO_ORDER = ['front', 'passengerSide', 'driverSide', 'back', 'additional'];
-const PUBLIC_VEHICLE_FIELDS = 'make model year vehicleType vehicleCategory transmission fuel pricePerDay parkingLocation';
+const PUBLIC_VEHICLE_FIELDS = 'make model year vehicleType vehicleCategory transmission fuel pricePerDay pricePerHour parkingLocation';
 
 function handleValidation(req, res) {
   const errors = validationResult(req);
@@ -168,7 +170,7 @@ export const getProfilePhoto = asyncHandler(async (req, res) => {
 
 // ---------- Verification documents ----------
 
-// POST /api/portal/documents (multipart: any of aadhaar / drivingLicence / selfie)
+// POST /api/portal/documents (multipart: any of aadhaar / aadhaarBack / drivingLicence / selfie)
 // A new upload replaces only that document type and puts only that document back to Pending review —
 // documents already approved stay approved (the profile status is recomputed from all of them).
 export const uploadDocuments = asyncHandler(async (req, res) => {
@@ -186,6 +188,24 @@ export const uploadDocuments = asyncHandler(async (req, res) => {
     data: { profileVerified, documents: await documentSummaries(customer._id) },
     message: 'Documents uploaded successfully',
   });
+});
+
+// GET /api/portal/documents/:id/file — one of the signed-in customer's own documents, streamed from S3
+// so they can see what they uploaded.
+export const getDocumentFile = asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    return res.status(404).json({ message: 'Document not found' });
+  }
+  const doc = await CustomerDocument.findOne({ _id: req.params.id, customer: req.customer._id, isDeleted: false }, 's3Key file mimeType fileName');
+  const file = doc ? await readFile(doc, 'file') : null;
+  if (!file) {
+    return res.status(404).json({ message: 'Document not found' });
+  }
+  res.set('Content-Type', file.contentType);
+  res.set('Content-Disposition', `inline; filename="${(doc.fileName || 'document').replace(/"/g, '')}"`);
+  // A re-upload is a new document id, so the response for this id never changes.
+  res.set('Cache-Control', 'private, max-age=86400');
+  res.send(file.body);
 });
 
 // ---------- Cars (public) ----------
@@ -380,24 +400,19 @@ export const getVehiclePhotoImage = asyncHandler(async (req, res) => {
 const OFFER_FIELDS = 'code discountType value maxDiscount note minBookingAmount applicability expiresAt perCustomerLimit';
 
 // GET /api/portal/offers — coupons an admin marked "Show on customer site" that are live right now
-// (active, inside their start/expiry window, not used up). Coupons for selected customers only appear
-// for those customers, when they're signed in.
+// (active, inside their start/expiry window, not used up). Coupons for selected customers are never
+// listed here — they can't be made public (couponController), and older ones are filtered out too.
 export const listOffers = asyncHandler(async (req, res) => {
   const now = new Date();
   await deactivateExpiredCoupons(now);
-  const audience = req.customer
-    ? [{ applicability: 'all' }, { applicability: 'selected', customers: req.customer._id }]
-    : [{ applicability: 'all' }];
   const offers = await Coupon.find({
     isDeleted: false,
     isActive: true,
     isPublic: true,
+    applicability: 'all',
     startAt: { $lte: now },
     expiresAt: { $gte: now },
-    $and: [
-      { $or: [{ maxUsage: { $exists: false } }, { maxUsage: null }, { $expr: { $lt: ['$usageCount', '$maxUsage'] } }] },
-      { $or: audience },
-    ],
+    $or: [{ maxUsage: { $exists: false } }, { maxUsage: null }, { $expr: { $lt: ['$usageCount', '$maxUsage'] } }],
   })
     .select(OFFER_FIELDS)
     .sort({ expiresAt: 1 })
@@ -406,7 +421,7 @@ export const listOffers = asyncHandler(async (req, res) => {
   // A signed-in customer doesn't see the coupons they've already used as often as each allows.
   const usedUp = await couponsUsedUpBy(offers, req.customer?._id);
   res.status(200).json({
-    data: offers.filter((o) => !usedUp.has(String(o._id))).map((o) => ({ ...o, forYou: o.applicability === 'selected' })),
+    data: offers.filter((o) => !usedUp.has(String(o._id))),
   });
 });
 
@@ -417,10 +432,21 @@ export const subscribeValidators = [
 ];
 
 // POST /api/portal/subscribe { email } — the home page's "Let us know your email" form. Subscribing an
-// email that's already on the list just succeeds again (no duplicate record, nothing revealed).
+// email that's already on the list just succeeds again (no duplicate record, nothing revealed). A new
+// subscriber gets a welcome email (utils/email.js); if it can't be sent, the subscription still counts.
 export const subscribe = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
-  await Subscriber.updateOne({ email: req.body.email }, { $setOnInsert: { email: req.body.email, source: 'home' } }, { upsert: true });
+  const { email } = req.body;
+  const result = await Subscriber.updateOne({ email }, { $setOnInsert: { email, source: 'home' } }, { upsert: true });
+  if (result.upsertedCount) {
+    try {
+      if (await sendEmail({ to: email, ...subscriberWelcomeEmail() })) {
+        await Subscriber.updateOne({ email }, { $set: { welcomeSentAt: new Date() } });
+      }
+    } catch (err) {
+      console.error(`[email] Welcome email to ${email} failed: ${err.message}`);
+    }
+  }
   res.status(200).json({ message: 'Thanks for subscribing! Watch your inbox for offers.' });
 });
 

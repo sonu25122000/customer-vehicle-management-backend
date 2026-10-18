@@ -49,8 +49,8 @@ export function customerCouponUses(couponId, customerId, excludeTripId) {
 
 export function perCustomerLimitMessage(coupon) {
   return coupon.perCustomerLimit === 1
-    ? 'This coupon can be used only once per customer, and it has already been used on this account'
-    : `This coupon can be used ${coupon.perCustomerLimit} times per customer, and this account has used it up`;
+    ? 'This coupon can be used only once per guest, and it has already been used on this account'
+    : `This coupon can be used ${coupon.perCustomerLimit} times per guest, and this account has used it up`;
 }
 
 // The per-customer limit (Coupon.perCustomerLimit): null when `customerId` can still use the coupon,

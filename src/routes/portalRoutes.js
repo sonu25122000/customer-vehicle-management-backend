@@ -229,7 +229,7 @@ router.post('/subscribe', authLimiter, portal.subscribeValidators, portal.subscr
  * /portal/documents:
  *   post:
  *     tags: [Customer Site]
- *     summary: Upload verification documents (aadhaar / drivingLicence / selfie) — only the uploaded ones go back to Pending review
+ *     summary: Upload verification documents (aadhaar front / aadhaarBack / drivingLicence / selfie) — only the uploaded ones go back to Pending review
  *     requestBody:
  *       required: true
  *       content:
@@ -237,11 +237,21 @@ router.post('/subscribe', authLimiter, portal.subscribeValidators, portal.subscr
  *           schema:
  *             type: object
  *             properties:
- *               aadhaar: { type: string, format: binary }
+ *               aadhaar: { type: string, format: binary, description: Aadhaar front }
+ *               aadhaarBack: { type: string, format: binary, description: Aadhaar back }
  *               drivingLicence: { type: string, format: binary }
  *               selfie: { type: string, format: binary }
  *     responses:
  *       200: { description: Uploaded }
+ * /portal/documents/{id}/file:
+ *   get:
+ *     tags: [Customer Site]
+ *     summary: One of the signed-in customer's own documents (the image or PDF), to view what they uploaded
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: string } }
+ *     responses:
+ *       200: { description: The file }
+ *       404: { description: Not found (or not this customer's) }
  * /portal/trips:
  *   get:
  *     tags: [Customer Site]
@@ -359,6 +369,7 @@ router.get('/profile/photo', requireCustomer, portal.getProfilePhoto);
 router.post('/profile/photo', requireCustomer, uploadProfilePhoto, handleUploadErrors, portal.uploadProfilePhoto);
 router.delete('/profile/photo', requireCustomer, portal.removeProfilePhoto);
 router.post('/documents', requireCustomer, uploadCustomerDocuments, handleUploadErrors, portal.uploadDocuments);
+router.get('/documents/:id/file', requireCustomer, portal.getDocumentFile);
 router.get('/trips', requireCustomer, portal.listTrips);
 router.post('/trips', requireCustomer, portal.bookingValidators, portal.createBooking);
 /**

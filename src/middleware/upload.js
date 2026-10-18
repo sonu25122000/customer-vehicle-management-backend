@@ -40,6 +40,7 @@ export const uploadCustomerDocuments = multer({
   { name: 'selfie', maxCount: 1 },
   { name: 'drivingLicence', maxCount: 1 },
   { name: 'aadhaar', maxCount: 1 },
+  { name: 'aadhaarBack', maxCount: 1 },
   { name: 'other', maxCount: 1 },
 ]);
 

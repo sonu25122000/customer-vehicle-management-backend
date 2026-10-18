@@ -58,7 +58,7 @@ export const listReviewCandidates = asyncHandler(async (_req, res) => {
       rating: t.rating,
       review: t.customerReview,
       ratedAt: t.customerRatedAt,
-      customerName: t.customer?.name || 'Customer',
+      customerName: t.customer?.name || 'Guest',
       carName: [t.vehicle?.make, t.vehicle?.model].filter(Boolean).join(' '),
       inCarousel: usedIds.has(String(t._id)),
     })),
@@ -173,6 +173,6 @@ export async function publicTestimonials() {
 // "Ravi Kumar" -> "Ravi K." — customers' full names are never shown on the public site.
 export function firstNameAndInitial(name) {
   const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return 'Customer';
+  if (!parts.length) return 'Guest';
   return parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0].toUpperCase()}.` : parts[0];
 }

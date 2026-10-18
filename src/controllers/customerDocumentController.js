@@ -9,11 +9,11 @@ import { syncProfileVerification } from '../utils/verification.js';
 const CUSTOMER_POPULATE = 'name mobile1 profileVerified';
 const MAX_REASON_LENGTH = 300;
 
-export const listValidators = [query('customer').isMongoId().withMessage('A valid customer is required')];
-export const uploadValidators = [body('customer').isMongoId().withMessage('A valid customer is required')];
+export const listValidators = [query('customer').isMongoId().withMessage('A valid guest is required')];
+export const uploadValidators = [body('customer').isMongoId().withMessage('A valid guest is required')];
 
 export const reviewValidators = [
-  body('customer').isMongoId().withMessage('A valid customer is required'),
+  body('customer').isMongoId().withMessage('A valid guest is required'),
   body('status').isIn(['Approved', 'Rejected']).withMessage('Status must be Approved or Rejected'),
   body('documents')
     .optional()
@@ -101,7 +101,7 @@ export const uploadCustomerDocuments = asyncHandler(async (req, res) => {
 
   const customer = await Customer.findOne({ _id: req.body.customer, isDeleted: false }, '_id name mobile1');
   if (!customer) {
-    return res.status(404).json({ message: 'Customer not found' });
+    return res.status(404).json({ message: 'Guest not found' });
   }
 
   const files = req.files || {};
@@ -134,7 +134,7 @@ export const reviewCustomerDocuments = asyncHandler(async (req, res) => {
   const { customer: customerId, status, documents } = req.body;
   const customer = await Customer.findOne({ _id: customerId, isDeleted: false }, '_id');
   if (!customer) {
-    return res.status(404).json({ message: 'Customer not found' });
+    return res.status(404).json({ message: 'Guest not found' });
   }
 
   const filter = { customer: customer._id, isDeleted: false };
@@ -142,7 +142,7 @@ export const reviewCustomerDocuments = asyncHandler(async (req, res) => {
   const matching = await CustomerDocument.countDocuments(filter);
   if (!matching || (documents && matching !== documents.length)) {
     return res.status(400).json({
-      message: documents ? "Some of these documents aren't on file for this customer any more" : 'This customer has no documents to review',
+      message: documents ? "Some of these documents aren't on file for this guest any more" : 'This guest has no documents to review',
     });
   }
 

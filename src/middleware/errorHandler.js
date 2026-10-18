@@ -7,7 +7,7 @@ export function errorHandler(err, req, res, next) {
 
   if (err.code === 11000) {
     const field = Object.keys(err.keyPattern || {})[0] || 'field';
-    return res.status(409).json({ message: `A customer with this ${field} already exists` });
+    return res.status(409).json({ message: `A guest with this ${field} already exists` });
   }
 
   if (err.name === 'ValidationError') {

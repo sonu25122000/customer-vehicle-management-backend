@@ -18,7 +18,7 @@ import crypto from 'crypto';
 
 const BUSINESS_UTC_OFFSET = process.env.BUSINESS_UTC_OFFSET || '+05:30';
 
-const CUSTOMER_TYPE_CODES = { selfie: 'SELFIE', drivingLicence: 'DL', aadhaar: 'AADHAAR', other: 'OTHER' };
+const CUSTOMER_TYPE_CODES = { selfie: 'SELFIE', drivingLicence: 'DL', aadhaar: 'AADHAAR', aadhaarBack: 'AADHAAR-BACK', other: 'OTHER' };
 const VEHICLE_TYPE_CODES = { rc: 'RC', insurance: 'INSURANCE' };
 const PHOTO_SLOT_CODES = { front: 'front', back: 'back', passengerSide: 'passenger_side', driverSide: 'driver_side', additional: 'additional' };
 const EXTENSIONS = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf' };
@@ -113,7 +113,7 @@ export function vehiclePhotoFileName(vehicle, slot, file) {
 // Each row stores its own full key (s3Key), so a later rename of the customer or vehicle only changes
 // where new files go — files already uploaded stay readable where they are.
 
-const CUSTOMER_TYPE_FOLDERS = { selfie: 'selfie', drivingLicence: 'driving-licence', aadhaar: 'aadhaar', other: 'other' };
+const CUSTOMER_TYPE_FOLDERS = { selfie: 'selfie', drivingLicence: 'driving-licence', aadhaar: 'aadhaar', aadhaarBack: 'aadhaar-back', other: 'other' };
 
 function vehicleFolder(vehicle) {
   return ['vehicles', slug(vehicle.vehicleNo, 16)];

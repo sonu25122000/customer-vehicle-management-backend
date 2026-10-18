@@ -3,7 +3,7 @@ import CustomerDocument, { REQUIRED_DOCUMENT_TYPES } from '../models/CustomerDoc
 import { recordCustomerHistory } from './customerHistory.js';
 
 // A customer's profileVerified is derived from their individual documents, never set by hand:
-//  - Accepted: selfie, driving licence and Aadhaar are all on file and Approved
+//  - Accepted: selfie, driving licence and both sides of the Aadhaar are all on file and Approved
 //  - Rejected: at least one of those is Rejected (the customer re-uploads just that one)
 //  - Pending:  anything else (missing, or waiting for review)
 // The optional 'other' document doesn't affect it.

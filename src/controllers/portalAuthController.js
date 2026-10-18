@@ -162,7 +162,7 @@ export const changePassword = asyncHandler(async (req, res) => {
   customer.mustChangePassword = false;
   await customer.save();
   await recordCustomerHistory(customer, customer, 'customer', customer.name, [
-    { field: 'password', from: '', to: 'Changed by customer' },
+    { field: 'password', from: '', to: 'Changed by guest' },
   ]);
 
   res.status(200).json({ customer: publicCustomer(customer), message: 'Password updated successfully' });

@@ -51,7 +51,7 @@ const schemas = {
       documentTypes: {
         type: 'array',
         readOnly: true,
-        items: { type: 'string', enum: ['selfie', 'drivingLicence', 'aadhaar', 'other'] },
+        items: { type: 'string', enum: ['selfie', 'drivingLicence', 'aadhaar', 'aadhaarBack', 'other'] },
         description: 'Document types on file. The files themselves come from GET /customer-documents?customer=<id>.',
       },
       isDeleted: { type: 'boolean' },
@@ -65,7 +65,7 @@ const schemas = {
         description: 'Customer ObjectId (populated with name and mobile1 on read)',
         oneOf: [{ type: 'string' }, { type: 'object', properties: { _id: { type: 'string' }, name: { type: 'string' }, mobile1: { type: 'string' } } }],
       },
-      type: { type: 'string', enum: ['selfie', 'drivingLicence', 'aadhaar', 'other'] },
+      type: { type: 'string', enum: ['selfie', 'drivingLicence', 'aadhaar', 'aadhaarBack', 'other'] },
       file: { type: 'string', description: 'base64 data URI (image or PDF)' },
       mimeType: { type: 'string', example: 'image/jpeg' },
       size: { type: 'integer', description: 'Bytes' },
@@ -92,6 +92,7 @@ const schemas = {
       model: { type: 'string', example: 'Baleno' },
       year: { type: 'integer', example: 2026 },
       pricePerDay: { type: 'number', example: 2500, description: 'Optional rental price per day (₹) used for customer-site bookings' },
+      pricePerHour: { type: 'number', example: 150, description: 'Optional rental price per hour (₹), shown on the customer site' },
       ownerName: { type: 'string' },
       ownerMobile: { type: 'string' },
       photoSlots: {

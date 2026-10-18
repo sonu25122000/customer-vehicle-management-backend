@@ -63,6 +63,12 @@ const vehicleSchema = new mongoose.Schema(
       type: Number,
       min: [0, 'Price per day cannot be negative'],
     },
+    // Rental price per hour (₹) for short rentals — shown on the customer site next to the daily
+    // price. Optional, like pricePerDay.
+    pricePerHour: {
+      type: Number,
+      min: [0, 'Price per hour cannot be negative'],
+    },
     ownerName: {
       type: String,
       required: [true, 'Owner/Host name is required'],

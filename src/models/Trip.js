@@ -18,7 +18,7 @@ const tripSchema = new mongoose.Schema(
     customer: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Customer',
-      required: [true, 'Customer is required'],
+      required: [true, 'Guest is required'],
     },
     vehicle: {
       type: mongoose.Schema.Types.ObjectId,

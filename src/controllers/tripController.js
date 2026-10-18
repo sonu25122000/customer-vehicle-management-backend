@@ -6,7 +6,7 @@ import Customer from '../models/Customer.js';
 import Vehicle from '../models/Vehicle.js';
 import Coupon from '../models/Coupon.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { applicableCouponFilter, calculateDiscount, perCustomerProblem } from '../utils/couponRules.js';
+import { applicableCouponFilter, calculateDiscount, minBookingProblem, perCustomerProblem } from '../utils/couponRules.js';
 import { ensureTripOtps, activeTripOtps, retireTripOtps } from '../utils/tripOtp.js';
 
 function escapeRegex(str) {
@@ -295,6 +295,8 @@ export const createTrip = asyncHandler(async (req, res) => {
     }
     const perCustomer = await perCustomerProblem(couponDoc, req.body.customer);
     if (perCustomer) return res.status(400).json({ message: perCustomer });
+    const belowMinimum = minBookingProblem(couponDoc, req.body.amount);
+    if (belowMinimum) return res.status(400).json({ message: belowMinimum });
     couponDiscount = calculateDiscount(couponDoc, req.body.amount);
   }
   // `amount` is stored net of the coupon discount, so balance due (amount - advance) stays correct
@@ -470,6 +472,8 @@ export const updateTrip = asyncHandler(async (req, res) => {
       }
       const perCustomer = await perCustomerProblem(couponDoc, existing.customer, existing._id);
       if (perCustomer) return res.status(400).json({ message: perCustomer });
+      const belowMinimum = minBookingProblem(couponDoc, gross);
+      if (belowMinimum) return res.status(400).json({ message: belowMinimum });
       couponDiscount = calculateDiscount(couponDoc, gross);
     } else {
       couponDiscount = 0;

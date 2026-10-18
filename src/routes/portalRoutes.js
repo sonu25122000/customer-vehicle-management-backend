@@ -180,6 +180,19 @@ router.post('/auth/change-password', authLimiter, requireCustomerSession, auth.c
  *     security: []
  *     responses:
  *       200: { description: Stats }
+ * /portal/subscribe:
+ *   post:
+ *     tags: [Customer Site]
+ *     summary: Subscribe an email for offers and updates (home page "Let us know your email" form)
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { type: object, required: [email], properties: { email: { type: string, format: email } } }
+ *     responses:
+ *       200: { description: Subscribed (also returned if the email was already subscribed) }
+ *       400: { $ref: '#/components/responses/ValidationError' }
  */
 router.get('/vehicles', portal.vehicleListValidators, portal.listVehicles);
 router.get('/vehicles/:id', portal.getVehicle);
@@ -188,6 +201,7 @@ router.get('/testimonials', portal.listTestimonials);
 router.get('/stats', portal.getSiteStats);
 router.get('/vehicle-photos/:id', optionalCustomer, portal.getVehiclePhotoImage);
 router.get('/offers', optionalCustomer, portal.listOffers);
+router.post('/subscribe', authLimiter, portal.subscribeValidators, portal.subscribe);
 
 /**
  * @swagger

@@ -68,6 +68,18 @@ const couponSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    // Optional free-text note about the coupon, e.g. "Only applicable for Mysore trip" for code MYSORE.
+    note: {
+      type: String,
+      trim: true,
+      maxlength: [200, 'Note is too long'],
+    },
+    // Optional minimum booking amount (gross, before discount) for the coupon to apply. Unset means no
+    // minimum — see minBookingProblem in utils/couponRules.js.
+    minBookingAmount: {
+      type: Number,
+      min: [1, 'Minimum booking amount must be at least 1'],
+    },
     isActive: {
       type: Boolean,
       default: true,

@@ -2,12 +2,20 @@ import { body, query, validationResult } from 'express-validator';
 import mongoose from 'mongoose';
 import CustomerDocument from '../models/CustomerDocument.js';
 import Coupon from '../models/Coupon.js';
+import Subscriber from '../models/Subscriber.js';
 import Trip from '../models/Trip.js';
 import Vehicle from '../models/Vehicle.js';
 import VehiclePhoto from '../models/VehiclePhoto.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { recordCustomerHistory } from '../utils/customerHistory.js';
-import { applicableCouponFilter, calculateDiscount, couponCodeProblem, couponsUsedUpBy, deactivateExpiredCoupons } from '../utils/couponRules.js';
+import {
+  applicableCouponFilter,
+  calculateDiscount,
+  couponCodeProblem,
+  couponsUsedUpBy,
+  deactivateExpiredCoupons,
+  minBookingProblem,
+} from '../utils/couponRules.js';
 import { documentSummary, syncProfileVerification } from '../utils/verification.js';
 import { consumeTripOtp, ensureTripOtps, OTP_LENGTH } from '../utils/tripOtp.js';
 import { objectKey, readFile, storeFile } from '../utils/storage.js';
@@ -369,7 +377,7 @@ export const getVehiclePhotoImage = asyncHandler(async (req, res) => {
 
 // ---------- Offers (public) ----------
 
-const OFFER_FIELDS = 'code discountType value maxDiscount applicability expiresAt perCustomerLimit';
+const OFFER_FIELDS = 'code discountType value maxDiscount note minBookingAmount applicability expiresAt perCustomerLimit';
 
 // GET /api/portal/offers — coupons an admin marked "Show on customer site" that are live right now
 // (active, inside their start/expiry window, not used up). Coupons for selected customers only appear
@@ -400,6 +408,20 @@ export const listOffers = asyncHandler(async (req, res) => {
   res.status(200).json({
     data: offers.filter((o) => !usedUp.has(String(o._id))).map((o) => ({ ...o, forYou: o.applicability === 'selected' })),
   });
+});
+
+// ---------- Newsletter (public) ----------
+
+export const subscribeValidators = [
+  body('email').trim().notEmpty().withMessage('Enter your email address').isLength({ max: 254 }).withMessage('Email is too long').isEmail().withMessage('Enter a valid email address').normalizeEmail({ gmail_remove_dots: false }),
+];
+
+// POST /api/portal/subscribe { email } — the home page's "Let us know your email" form. Subscribing an
+// email that's already on the list just succeeds again (no duplicate record, nothing revealed).
+export const subscribe = asyncHandler(async (req, res) => {
+  if (!handleValidation(req, res)) return;
+  await Subscriber.updateOne({ email: req.body.email }, { $setOnInsert: { email: req.body.email, source: 'home' } }, { upsert: true });
+  res.status(200).json({ message: 'Thanks for subscribing! Watch your inbox for offers.' });
 });
 
 // ---------- Trips ----------
@@ -603,6 +625,8 @@ export const validateCoupon = asyncHandler(async (req, res) => {
   await deactivateExpiredCoupons();
   const { coupon, message } = await couponCodeProblem(req.body.code, req.customer._id);
   if (!coupon) return res.status(400).json({ message });
+  const belowMinimum = minBookingProblem(coupon, priced.amount);
+  if (belowMinimum) return res.status(400).json({ message: belowMinimum });
 
   const discount = calculateDiscount(coupon, priced.amount);
   res.status(200).json({
@@ -647,6 +671,8 @@ export const createBooking = asyncHandler(async (req, res) => {
     await deactivateExpiredCoupons();
     const check = await couponCodeProblem(req.body.couponCode, req.customer._id);
     if (!check.coupon) return res.status(400).json({ message: check.message });
+    const belowMinimum = minBookingProblem(check.coupon, amount);
+    if (belowMinimum) return res.status(400).json({ message: belowMinimum });
     // Reserve one use atomically — only succeeds while the coupon is still live and under its limit.
     couponDoc = await Coupon.findOneAndUpdate(applicableCouponFilter(req.customer._id, new Date(), check.coupon._id), {
       $inc: { usageCount: 1 },

@@ -98,6 +98,14 @@ export function deactivateExpiredCoupons(now = new Date()) {
   return Coupon.updateMany({ isDeleted: false, isActive: true, expiresAt: { $lt: now } }, { $set: { isActive: false } });
 }
 
+// The coupon's minimum booking amount (Coupon.minBookingAmount): null when the gross `amount` meets it,
+// otherwise the reason the coupon can't be applied.
+export function minBookingProblem(coupon, amount) {
+  if (!coupon?.minBookingAmount) return null;
+  if ((Number(amount) || 0) >= coupon.minBookingAmount) return null;
+  return `This coupon is only applicable on a minimum booking of ₹${coupon.minBookingAmount.toLocaleString('en-IN')}`;
+}
+
 // Discount in rupees for a coupon on a given gross amount — a percentage of it (capped at the
 // coupon's maxDiscount when it has one, e.g. 20% up to ₹100), or a flat amount — never more than the
 // amount itself (so the net amount can't go negative).

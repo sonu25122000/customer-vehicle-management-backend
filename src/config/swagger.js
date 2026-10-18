@@ -182,6 +182,8 @@ const schemas = {
       discountType: { type: 'string', enum: ['percentage', 'flat'] },
       value: { type: 'number', example: 20 },
       maxDiscount: { type: 'number', minimum: 1, example: 100, description: 'Percentage coupons only — cap on the rupee discount (e.g. 20% up to ₹100). Omit for no cap; ignored for flat coupons.' },
+      note: { type: 'string', maxLength: 200, example: 'Only applicable for Mysore trip', description: 'Optional note about where/how the coupon applies' },
+      minBookingAmount: { type: 'number', minimum: 1, example: 2000, description: 'Optional minimum booking amount (before discount) the coupon applies to. Omit for no minimum.' },
       applicability: { type: 'string', enum: ['all', 'selected'] },
       customers: { type: 'array', items: { type: 'string' }, description: 'Customer ObjectIds; only used when applicability is "selected"' },
       startAt: { type: 'string', format: 'date-time', description: 'Must be on a 30-minute boundary (:00 or :30)' },

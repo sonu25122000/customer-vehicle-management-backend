@@ -34,6 +34,13 @@ export const couponValidators = [
     .isFloat({ min: 1 })
     .withMessage('Maximum discount must be at least ₹1')
     .toFloat(),
+  body('note').optional({ values: 'null' }).isString().withMessage('Invalid note').trim().isLength({ max: 200 }).withMessage('Note is too long (max 200 characters)'),
+  // Optional — blank/absent means the coupon applies to a booking of any amount.
+  body('minBookingAmount')
+    .optional({ checkFalsy: true })
+    .isFloat({ min: 1, max: 10000000 })
+    .withMessage('Minimum booking amount must be at least ₹1')
+    .toFloat(),
   body('applicability').trim().notEmpty().withMessage('Applicability is required').isIn(['all', 'selected']).withMessage('Invalid applicability'),
   body('customers')
     .custom((value, { req }) => {
@@ -153,7 +160,7 @@ export const applicableValidators = [
   query('trip').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid trip'),
 ];
 
-const APPLICABLE_FIELDS = 'code discountType value maxDiscount applicability startAt expiresAt maxUsage usageCount perCustomerLimit';
+const APPLICABLE_FIELDS = 'code discountType value maxDiscount note minBookingAmount applicability startAt expiresAt maxUsage usageCount perCustomerLimit';
 
 // GET /api/coupons/applicable?customer=<id>&current=<couponId> — coupons the trip form offers for this
 // customer: live right now (active, inside its start/expiry window), not used up, and either open to
@@ -200,7 +207,7 @@ export const getCoupon = asyncHandler(async (req, res) => {
 export const createCoupon = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage, perCustomerLimit, isActive, isPublic } =
+  const { code, discountType, value, maxDiscount, note, minBookingAmount, applicability, customers, startAt, expiresAt, maxUsage, perCustomerLimit, isActive, isPublic } =
     req.body;
 
   if (new Date(expiresAt) <= new Date()) {
@@ -217,6 +224,8 @@ export const createCoupon = asyncHandler(async (req, res) => {
     discountType,
     value,
     maxDiscount: discountType === 'percentage' ? maxDiscount || undefined : undefined,
+    note: note || undefined,
+    minBookingAmount: minBookingAmount || undefined,
     applicability,
     customers: applicability === 'selected' ? customers : [],
     startAt,
@@ -238,7 +247,7 @@ export const createCoupon = asyncHandler(async (req, res) => {
 export const updateCoupon = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { code, discountType, value, maxDiscount, applicability, customers, startAt, expiresAt, maxUsage, perCustomerLimit, isActive, isPublic } =
+  const { code, discountType, value, maxDiscount, note, minBookingAmount, applicability, customers, startAt, expiresAt, maxUsage, perCustomerLimit, isActive, isPublic } =
     req.body;
 
   const duplicate = await findDuplicate(code, req.params.id);
@@ -265,6 +274,8 @@ export const updateCoupon = asyncHandler(async (req, res) => {
     discountType,
     value,
     maxDiscount: discountType === 'percentage' ? maxDiscount || undefined : undefined,
+    note: note || undefined,
+    minBookingAmount: minBookingAmount || undefined,
     applicability,
     customers: applicability === 'selected' ? customers : [],
     startAt,

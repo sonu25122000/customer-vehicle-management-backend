@@ -431,20 +431,40 @@ export const subscribeValidators = [
   body('email').trim().notEmpty().withMessage('Enter your email address').isLength({ max: 254 }).withMessage('Email is too long').isEmail().withMessage('Enter a valid email address').normalizeEmail({ gmail_remove_dots: false }),
 ];
 
+// A welcome email being sent is "claimed" for this long, so a double click doesn't send it twice; after
+// that (e.g. the server stopped mid-send) a new subscribe may try again.
+const WELCOME_CLAIM_MS = 5 * 60 * 1000;
+
 // POST /api/portal/subscribe { email } — the home page's "Let us know your email" form. Subscribing an
-// email that's already on the list just succeeds again (no duplicate record, nothing revealed). A new
-// subscriber gets a welcome email (utils/email.js); if it can't be sent, the subscription still counts.
+// email that's already on the list just succeeds again (no duplicate record, nothing revealed). Anyone
+// who hasn't received the welcome email yet gets it (utils/email.js) — new subscribers, and earlier ones
+// whose email couldn't be sent at the time. It's sent once per address; if it can't be sent, the
+// subscription still counts.
 export const subscribe = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
   const { email } = req.body;
-  const result = await Subscriber.updateOne({ email }, { $setOnInsert: { email, source: 'home' } }, { upsert: true });
-  if (result.upsertedCount) {
+  await Subscriber.updateOne({ email }, { $setOnInsert: { email, source: 'home' } }, { upsert: true });
+
+  const now = new Date();
+  const claimed = await Subscriber.findOneAndUpdate(
+    {
+      email,
+      welcomeSentAt: null,
+      $or: [{ welcomeClaimedAt: null }, { welcomeClaimedAt: { $lt: new Date(now - WELCOME_CLAIM_MS) } }],
+    },
+    { $set: { welcomeClaimedAt: now } }
+  );
+  if (claimed) {
     try {
       if (await sendEmail({ to: email, ...subscriberWelcomeEmail() })) {
-        await Subscriber.updateOne({ email }, { $set: { welcomeSentAt: new Date() } });
+        await Subscriber.updateOne({ email }, { $set: { welcomeSentAt: new Date() }, $unset: { welcomeClaimedAt: 1 } });
+      } else {
+        // Email isn't configured: leave it unsent, so it goes out once it is.
+        await Subscriber.updateOne({ email }, { $unset: { welcomeClaimedAt: 1 } });
       }
     } catch (err) {
       console.error(`[email] Welcome email to ${email} failed: ${err.message}`);
+      await Subscriber.updateOne({ email }, { $unset: { welcomeClaimedAt: 1 } });
     }
   }
   res.status(200).json({ message: 'Thanks for subscribing! Watch your inbox for offers.' });

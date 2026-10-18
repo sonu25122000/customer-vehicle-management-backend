@@ -4,9 +4,24 @@
 const NAVY = '#142b4a';
 const ORANGE = '#ff8a24';
 
-// The public customer site — links in emails point here.
+// The public website — links in emails point here. (Set SITE_URL to http://localhost:5174 locally to test
+// links such as password resets against the local site.)
 export function siteUrl() {
-  return (process.env.SITE_URL || 'https://customer-vehicle-management-user.vercel.app').replace(/\/+$/, '');
+  return (process.env.SITE_URL || 'https://www.roamwheels.com').replace(/\/+$/, '');
+}
+
+// Always the live site's logo, so it shows in inboxes even when links point to a local copy.
+const LOGO_URL = 'https://www.roamwheels.com/logo.png';
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+function button(href, label) {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:28px;"><tr>
+<td style="border-radius:999px;background:${ORANGE};">
+<a href="${href}" style="display:inline-block;padding:13px 28px;font-size:15px;font-weight:bold;color:${NAVY};text-decoration:none;">${label}</a>
+</td></tr></table>`;
 }
 
 function layout({ preheader, body }) {
@@ -20,7 +35,7 @@ function layout({ preheader, body }) {
 <tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;">
 <tr><td style="background:#ffffff;padding:16px 24px 8px;text-align:center;border-top:6px solid ${NAVY};border-bottom:3px solid ${ORANGE};">
-<img src="${site}/logo.png" alt="RoamWheels" width="110" height="110" style="width:110px;height:110px;border:0;">
+<img src="${LOGO_URL}" alt="RoamWheels" width="110" height="110" style="width:110px;height:110px;border:0;">
 </td></tr>
 <tr><td style="padding:32px 28px;">${body}</td></tr>
 <tr><td style="background:#f8fafc;padding:18px 28px;text-align:center;font-size:12px;color:#94a3b8;">
@@ -50,7 +65,7 @@ export function subscriberWelcomeEmail() {
 <table role="presentation" cellpadding="0" cellspacing="0">${perks}</table>
 <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:28px;"><tr>
 <td style="border-radius:999px;background:${ORANGE};">
-<a href="${site}/cars" style="display:inline-block;padding:13px 28px;font-size:15px;font-weight:bold;color:${NAVY};text-decoration:none;">Explore cars &rarr;</a>
+<a href="${site}/" style="display:inline-block;padding:13px 28px;font-size:15px;font-weight:bold;color:${NAVY};text-decoration:none;">Explore cars &rarr;</a>
 </td></tr></table>
 <p style="margin:28px 0 0;font-size:13px;line-height:1.6;color:#64748b;">Happy roaming,<br>Team RoamWheels</p>`,
   });
@@ -61,10 +76,42 @@ export function subscriberWelcomeEmail() {
     '',
     ...PERKS.map((p) => `- ${p}`),
     '',
-    `Explore cars: ${site}/cars`,
+    `Explore cars: ${site}/`,
     '',
     'Happy roaming,',
     'Team RoamWheels',
   ].join('\n');
   return { subject: 'Welcome to RoamWheels 🚗', html, text };
+}
+
+// "Forgot password" — a one-time link to choose a new password. `mobile` is shown masked, so a guest with
+// more than one account on the same email knows which one the link is for.
+export function passwordResetEmail({ name, mobile, link, validMinutes }) {
+  const firstName = escapeHtml(String(name || '').trim().split(/\s+/)[0] || 'there');
+  const masked = mobile ? `•••••${String(mobile).slice(-5)}` : '';
+  const html = layout({
+    preheader: `Reset your RoamWheels password — this link works for ${validMinutes} minutes.`,
+    body: `
+<h1 style="margin:0;font-size:24px;line-height:1.3;color:${NAVY};">Reset your <span style="color:${ORANGE};">password</span></h1>
+<p style="margin:16px 0 0;font-size:15px;line-height:1.6;">Hi ${firstName}, we got a request to reset the password for your RoamWheels account${
+      masked ? ` with mobile number <strong>${masked}</strong>` : ''
+    }.</p>
+<p style="margin:12px 0 0;font-size:15px;line-height:1.6;">Tap the button below to choose a new password. The link works once, for the next <strong>${validMinutes} minutes</strong>.</p>
+${button(link, 'Set a new password &rarr;')}
+<p style="margin:24px 0 0;font-size:13px;line-height:1.6;color:#64748b;">If the button doesn't work, copy this link into your browser:<br><a href="${link}" style="color:#64748b;word-break:break-all;">${link}</a></p>
+<p style="margin:16px 0 0;font-size:13px;line-height:1.6;color:#64748b;">Didn't ask for this? You can ignore this email — your password stays the same.</p>
+<p style="margin:24px 0 0;font-size:13px;line-height:1.6;color:#64748b;">Team RoamWheels</p>`,
+  });
+  const text = [
+    `Hi ${String(name || '').trim().split(/\s+/)[0] || 'there'},`,
+    '',
+    `We got a request to reset the password for your RoamWheels account${masked ? ` with mobile number ${masked}` : ''}.`,
+    `Open this link to choose a new password (it works once, for the next ${validMinutes} minutes):`,
+    link,
+    '',
+    "Didn't ask for this? You can ignore this email — your password stays the same.",
+    '',
+    'Team RoamWheels',
+  ].join('\n');
+  return { subject: 'Reset your RoamWheels password', html, text };
 }

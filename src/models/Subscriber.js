@@ -16,8 +16,10 @@ const subscriberSchema = new mongoose.Schema(
       trim: true,
       default: 'home',
     },
-    // When the welcome email went out (unset if email wasn't configured or sending failed).
+    // When the welcome email went out (unset until it has been sent successfully).
     welcomeSentAt: { type: Date },
+    // Set while a welcome email is being sent, so two quick subscribes don't send it twice.
+    welcomeClaimedAt: { type: Date },
   },
   { timestamps: true }
 );

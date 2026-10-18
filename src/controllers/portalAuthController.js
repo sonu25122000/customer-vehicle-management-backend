@@ -5,6 +5,10 @@ import Customer from '../models/Customer.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { CUSTOMER_COOKIE } from '../middleware/customerAuth.js';
 import { recordCustomerHistory } from '../utils/customerHistory.js';
+import crypto from 'node:crypto';
+import PasswordReset from '../models/PasswordReset.js';
+import { sendEmail } from '../utils/email.js';
+import { passwordResetEmail, siteUrl } from '../utils/emailTemplates.js';
 
 // Customer-site sessions last as long as the admin portal's "remember me" sessions.
 const SESSION_MS = Number(process.env.SESSION_REMEMBER_MAX_AGE_MS) || 30 * 24 * 60 * 60 * 1000;
@@ -16,6 +20,7 @@ const mobileValidator = body('mobile')
   .matches(/^[0-9]{10}$/)
   .withMessage('Enter a valid 10-digit mobile number');
 
+// Email is required at signup (the profile page can still change it later).
 export const signupValidators = [
   body('name')
     .trim()
@@ -24,7 +29,15 @@ export const signupValidators = [
     .isLength({ max: 50 })
     .withMessage('Name cannot exceed 50 characters'),
   mobileValidator,
-  body('email').optional({ checkFalsy: true }).trim().isEmail().withMessage('Enter a valid email address').normalizeEmail({ gmail_remove_dots: false }),
+  body('email')
+    .trim()
+    .notEmpty()
+    .withMessage('Email is required')
+    .isLength({ max: 254 })
+    .withMessage('Email is too long')
+    .isEmail()
+    .withMessage('Enter a valid email address')
+    .normalizeEmail({ gmail_remove_dots: false }),
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
 ];
 
@@ -166,4 +179,129 @@ export const changePassword = asyncHandler(async (req, res) => {
   ]);
 
   res.status(200).json({ customer: publicCustomer(customer), message: 'Password updated successfully' });
+});
+
+// ---------- Forgot password (email link) ----------
+
+const RESET_VALID_MINUTES = 30;
+// At most this many reset emails per account per hour, however often the form is sent.
+const RESET_EMAILS_PER_HOUR = 3;
+// The same answer whether or not an account matched, so the form can't be used to find out who has one.
+const RESET_SENT_MESSAGE = "If that matches an account with an email address, we've sent it a link to reset your password.";
+const RESET_INVALID = { code: 'RESET_LINK_INVALID', message: 'This reset link is invalid or has expired. Please ask for a new one.' };
+
+const hashResetToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+
+// Makes the customer's unused reset links stop working (they're cleaned up by the TTL index later).
+function expireOpenResetLinks(customerId) {
+  const now = new Date();
+  return PasswordReset.updateMany({ customer: customerId, usedAt: null, expiresAt: { $gt: now } }, { $set: { expiresAt: now } });
+}
+
+export const forgotPasswordValidators = [
+  body('identifier')
+    .trim()
+    .notEmpty()
+    .withMessage('Enter your mobile number or email')
+    .isLength({ max: 254 })
+    .withMessage('Enter your mobile number or email')
+    .custom((value) => /^[0-9]{10}$/.test(value) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
+    .withMessage('Enter your 10-digit mobile number or your email address')
+    // Keep what was typed, then normalise an email the way signup stores it (lowercase; Gmail "+tag" removed).
+    .customSanitizer((value, { req }) => {
+      req.identifierTyped = value.toLowerCase();
+      return value;
+    })
+    .if((value) => value.includes('@'))
+    .normalizeEmail({ gmail_remove_dots: false }),
+];
+
+// POST /api/portal/auth/forgot-password { identifier: mobile number or email } — emails a one-time link
+// (valid RESET_VALID_MINUTES) to set a new password. A mobile number finds that account; an email finds
+// the accounts that use it (each gets its own link). Accounts without an email can't use this — they
+// contact the team, who can set a temporary password from the admin portal.
+export const forgotPassword = asyncHandler(async (req, res) => {
+  if (!handleValidation(req, res)) return;
+
+  const { identifier } = req.body;
+  const filter = /^[0-9]{10}$/.test(identifier)
+    ? { mobile1: identifier, email: { $nin: ['', null] } }
+    : { email: { $in: [...new Set([identifier, req.identifierTyped])] } };
+  const customers = await Customer.find({ ...filter, isDeleted: false }, 'name mobile1 email').limit(3);
+
+  for (const customer of customers) {
+    const recent = await PasswordReset.countDocuments({ customer: customer._id, createdAt: { $gt: new Date(Date.now() - 60 * 60 * 1000) } });
+    if (recent >= RESET_EMAILS_PER_HOUR) continue;
+
+    const token = crypto.randomBytes(32).toString('hex');
+    // A new link replaces any earlier unused ones — they're expired, not deleted, so they still count
+    // towards RESET_EMAILS_PER_HOUR.
+    await expireOpenResetLinks(customer._id);
+    await PasswordReset.create({
+      customer: customer._id,
+      tokenHash: hashResetToken(token),
+      email: customer.email,
+      expiresAt: new Date(Date.now() + RESET_VALID_MINUTES * 60 * 1000),
+    });
+    const link = `${siteUrl()}/reset-password?token=${token}`;
+    try {
+      await sendEmail({ to: customer.email, ...passwordResetEmail({ name: customer.name, mobile: customer.mobile1, link, validMinutes: RESET_VALID_MINUTES }) });
+    } catch (err) {
+      console.error(`[email] Password reset email to ${customer.email} failed: ${err.message}`);
+    }
+  }
+
+  res.status(200).json({ message: RESET_SENT_MESSAGE });
+});
+
+const resetTokenValidator = body('token')
+  .trim()
+  .matches(/^[a-f0-9]{64}$/)
+  .withMessage(RESET_INVALID.message);
+
+export const checkResetValidators = [resetTokenValidator];
+export const resetPasswordValidators = [resetTokenValidator, body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters')];
+
+// POST /api/portal/auth/reset-password/check { token } — whether a reset link still works, so the page
+// can say so before the guest types a new password. Doesn't use the link up.
+export const checkResetToken = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json(RESET_INVALID);
+  const reset = await PasswordReset.findOne({ tokenHash: hashResetToken(req.body.token), usedAt: null, expiresAt: { $gt: new Date() } }).populate(
+    'customer',
+    'name isDeleted'
+  );
+  if (!reset || !reset.customer || reset.customer.isDeleted) return res.status(400).json(RESET_INVALID);
+  res.status(200).json({ data: { name: reset.customer.name.trim().split(/\s+/)[0] } });
+});
+
+// POST /api/portal/auth/reset-password { token, password } — sets the new password with a link from the
+// forgot-password email (once; it expires after RESET_VALID_MINUTES) and logs the guest in. Any other
+// links for the account stop working, and a temporary password from the team no longer has to be changed.
+export const resetPassword = asyncHandler(async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    const tokenError = errors.array().find((e) => e.path === 'token');
+    return res.status(400).json(tokenError ? RESET_INVALID : { message: errors.array()[0].msg });
+  }
+
+  // Claim the link first, so two quick submits can't both use it.
+  const reset = await PasswordReset.findOneAndUpdate(
+    { tokenHash: hashResetToken(req.body.token), usedAt: null, expiresAt: { $gt: new Date() } },
+    { $set: { usedAt: new Date() } }
+  );
+  if (!reset) return res.status(400).json(RESET_INVALID);
+  const customer = await Customer.findOne({ _id: reset.customer, isDeleted: false }).select('+passwordHash');
+  if (!customer) return res.status(400).json(RESET_INVALID);
+
+  customer.passwordHash = await bcrypt.hash(req.body.password, 10);
+  customer.mustChangePassword = false;
+  await customer.save();
+  await expireOpenResetLinks(customer._id);
+  await recordCustomerHistory(customer, customer, 'customer', customer.name, [
+    { field: 'password', from: '', to: 'Reset by guest (forgot password email)' },
+  ]);
+
+  issueSession(customer, res);
+  res.status(200).json({ customer: publicCustomer(customer), message: 'Your password has been reset' });
 });

@@ -27,6 +27,15 @@ const authLimiter = rateLimit({
   message: { message: 'Too many attempts. Please try again later.' },
 });
 
+// "Forgot password" sends emails, so it's limited harder than the other auth forms.
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many reset requests. Please try again in a few minutes.' },
+});
+
 /**
  * @swagger
  * tags:
@@ -47,11 +56,11 @@ const authLimiter = rateLimit({
  *         application/json:
  *           schema:
  *             type: object
- *             required: [name, mobile, password]
+ *             required: [name, mobile, email, password]
  *             properties:
  *               name: { type: string }
  *               mobile: { type: string, example: '9876543210' }
- *               email: { type: string }
+ *               email: { type: string, format: email }
  *               password: { type: string, minLength: 6 }
  *     responses:
  *       201: { description: Signed up and logged in (sets the customerToken cookie) }
@@ -115,6 +124,63 @@ router.post('/auth/login', authLimiter, auth.loginValidators, auth.login);
 router.post('/auth/logout', auth.logout);
 router.get('/auth/me', requireCustomerSession, auth.me);
 router.post('/auth/change-password', authLimiter, requireCustomerSession, auth.changePasswordValidators, auth.changePassword);
+
+/**
+ * @swagger
+ * /portal/auth/forgot-password:
+ *   post:
+ *     tags: [Customer Site]
+ *     summary: Email a one-time link (valid 30 minutes) to set a new password
+ *     description: |
+ *       Always answers the same way, whether or not an account matched. A mobile number finds that account;
+ *       an email finds the accounts using it. Accounts without an email on file can't use this. At most 3
+ *       emails per account per hour.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [identifier]
+ *             properties:
+ *               identifier: { type: string, description: 10-digit mobile number or email, example: '9876543210' }
+ *     responses:
+ *       200: { description: Sent if an account matched }
+ *       400: { $ref: '#/components/responses/ValidationError' }
+ *       429: { description: Too many requests }
+ * /portal/auth/reset-password/check:
+ *   post:
+ *     tags: [Customer Site]
+ *     summary: Whether a reset link still works (doesn't use it up)
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { type: object, required: [token], properties: { token: { type: string } } }
+ *     responses:
+ *       200: { description: "Valid — { data: { name } } (first name)" }
+ *       400: { description: code RESET_LINK_INVALID — invalid, used or expired }
+ * /portal/auth/reset-password:
+ *   post:
+ *     tags: [Customer Site]
+ *     summary: Set a new password with the emailed link, and log in
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [token, password]
+ *             properties:
+ *               token: { type: string }
+ *               password: { type: string, minLength: 6 }
+ *     responses:
+ *       200: { description: Password reset; logged in (sets the customerToken cookie) }
+ *       400: { description: code RESET_LINK_INVALID, or the password is too short }
+ */
+router.post('/auth/forgot-password', forgotPasswordLimiter, auth.forgotPasswordValidators, auth.forgotPassword);
+router.post('/auth/reset-password/check', authLimiter, auth.checkResetValidators, auth.checkResetToken);
+router.post('/auth/reset-password', authLimiter, auth.resetPasswordValidators, auth.resetPassword);
 
 /**
  * @swagger

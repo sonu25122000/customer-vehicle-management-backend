@@ -27,6 +27,15 @@ const authLimiter = rateLimit({
   message: { message: 'Too many attempts. Please try again later.' },
 });
 
+// Requests that send a verification code by email.
+const emailCodeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many code requests. Please try again in a few minutes.' },
+});
+
 // "Forgot password" sends emails, so it's limited harder than the other auth forms.
 const forgotPasswordLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -56,12 +65,13 @@ const forgotPasswordLimiter = rateLimit({
  *         application/json:
  *           schema:
  *             type: object
- *             required: [name, mobile, email, password]
+ *             required: [name, mobile, email, password, emailCode]
  *             properties:
  *               name: { type: string }
  *               mobile: { type: string, example: '9876543210' }
  *               email: { type: string, format: email }
  *               password: { type: string, minLength: 6 }
+ *               emailCode: { type: string, description: 6-digit code from POST /portal/auth/signup/email-code }
  *     responses:
  *       201: { description: Signed up and logged in (sets the customerToken cookie) }
  *       400: { $ref: '#/components/responses/ValidationError' }
@@ -119,7 +129,32 @@ const forgotPasswordLimiter = rateLimit({
  *       200: { description: Password changed }
  *       400: { description: Wrong current password, or the new one is the same / too short }
  */
-router.post('/auth/signup', authLimiter, auth.signupValidators, auth.signup);
+/**
+ * @swagger
+ * /portal/auth/signup/email-code:
+ *   post:
+ *     tags: [Customer Site]
+ *     summary: Signup step 1 — check the form and email a 6-digit code (valid 10 minutes)
+ *     description: Same body as signup without emailCode. Resend after 30 seconds, at most 5 codes per hour per address.
+ *     responses:
+ *       200: { description: "Code sent — { expiresAt, resendAt }" }
+ *       409: { description: Mobile already registered, or email used by another account (code EMAIL_IN_USE) }
+ *       429: { description: Asked too soon (EMAIL_OTP_COOLDOWN, retryAfter) or too often (EMAIL_OTP_LIMIT) }
+ * /portal/profile/email-code:
+ *   post:
+ *     tags: [Customer Site]
+ *     summary: Changing the email, step 1 — email a 6-digit code to the new address
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { type: object, required: [email], properties: { email: { type: string, format: email } } }
+ *     responses:
+ *       200: { description: "Code sent — { expiresAt, resendAt }; then PATCH /portal/profile with emailCode" }
+ *       409: { description: Email used by another account (EMAIL_IN_USE) }
+ */
+router.post('/auth/signup/email-code', emailCodeLimiter, auth.signupValidators, auth.sendSignupEmailCode);
+router.post('/auth/signup', authLimiter, auth.signupWithCodeValidators, auth.signup);
 router.post('/auth/login', authLimiter, auth.loginValidators, auth.login);
 router.post('/auth/logout', auth.logout);
 router.get('/auth/me', requireCustomerSession, auth.me);
@@ -404,6 +439,7 @@ router.post('/subscribe', authLimiter, portal.subscribeValidators, portal.subscr
  */
 router.get('/profile', requireCustomer, portal.getProfile);
 router.patch('/profile', requireCustomer, portal.profileValidators, portal.updateProfile);
+router.post('/profile/email-code', emailCodeLimiter, requireCustomer, portal.profileEmailCodeValidators, portal.sendProfileEmailCode);
 /**
  * @swagger
  * /portal/profile/photo:

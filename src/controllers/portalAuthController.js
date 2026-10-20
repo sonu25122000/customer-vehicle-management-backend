@@ -9,6 +9,8 @@ import crypto from 'node:crypto';
 import PasswordReset from '../models/PasswordReset.js';
 import { sendEmail } from '../utils/email.js';
 import { passwordResetEmail, siteUrl } from '../utils/emailTemplates.js';
+import { EMAIL_IN_USE, emailInUse } from '../utils/customerEmail.js';
+import { EMAIL_OTP_LENGTH, respondWithEmailOtpError, sendEmailOtp, verifyEmailOtp } from '../utils/emailOtp.js';
 
 // Customer-site sessions last as long as the admin portal's "remember me" sessions.
 const SESSION_MS = Number(process.env.SESSION_REMEMBER_MAX_AGE_MS) || 30 * 24 * 60 * 60 * 1000;
@@ -86,17 +88,63 @@ export function publicCustomer(c) {
   };
 }
 
-// POST /api/portal/auth/signup
+// The checks both signup steps make: the mobile number isn't registered yet, and the email isn't used by
+// another account. Sends the error response and returns null when one fails; otherwise returns
+// { existing } — an admin-created record for this mobile number (being claimed), or null.
+async function signupProblem(req, res) {
+  const { mobile, email } = req.body;
+  const existing = await Customer.findOne({ mobile1: mobile, isDeleted: false }).select('+passwordHash');
+  if (existing?.passwordHash) {
+    res.status(409).json({ message: 'An account with this mobile number already exists. Please log in.' });
+    return null;
+  }
+  // One email per account (an admin-created record being claimed may already have this same email).
+  if (await emailInUse(email, existing?._id)) {
+    res.status(409).json({ message: EMAIL_IN_USE, code: 'EMAIL_IN_USE' });
+    return null;
+  }
+  return { existing };
+}
+
+// POST /api/portal/auth/signup/email-code { name, mobile, email, password } — signup step 1: checks the
+// form, then emails a 6-digit code to the address (valid EMAIL_OTP_VALID_MINUTES). No account yet.
+export const sendSignupEmailCode = asyncHandler(async (req, res) => {
+  if (!handleValidation(req, res)) return;
+  if (!(await signupProblem(req, res))) return;
+  try {
+    const { expiresAt, resendAt } = await sendEmailOtp({ email: req.body.email, purpose: 'signup', name: req.body.name });
+    res.status(200).json({ message: `We've sent a code to ${req.body.email}`, expiresAt, resendAt });
+  } catch (err) {
+    if (respondWithEmailOtpError(err, res)) return;
+    throw err;
+  }
+});
+
+export const signupWithCodeValidators = [
+  ...signupValidators,
+  body('emailCode')
+    .trim()
+    .matches(new RegExp(`^[0-9]{${EMAIL_OTP_LENGTH}}$`))
+    .withMessage(`Enter the ${EMAIL_OTP_LENGTH}-digit code we emailed you`),
+];
+
+// POST /api/portal/auth/signup { name, mobile, email, password, emailCode } — signup step 2: the account
+// is created only with the right code from step 1, proving the email is theirs.
 // A brand-new mobile number creates a customer with createdBy:'customer'. A mobile number an admin
-// already added (no password yet) is claimed instead: the existing record gets a password, keeps
-// createdBy:'admin', and its trips show up for the customer straight away.
+// already added (no password yet) is claimed instead: the existing record gets a password and the
+// verified email, keeps createdBy:'admin', and its trips show up for the customer straight away.
 export const signup = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
-  const { name, mobile, email, password } = req.body;
-  const existing = await Customer.findOne({ mobile1: mobile, isDeleted: false }).select('+passwordHash');
-  if (existing?.passwordHash) {
-    return res.status(409).json({ message: 'An account with this mobile number already exists. Please log in.' });
+  const { name, mobile, email, password, emailCode } = req.body;
+  const checked = await signupProblem(req, res);
+  if (!checked) return;
+  const { existing } = checked;
+  try {
+    await verifyEmailOtp({ email, purpose: 'signup', code: emailCode });
+  } catch (err) {
+    if (respondWithEmailOtpError(err, res)) return;
+    throw err;
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
@@ -105,7 +153,7 @@ export const signup = asyncHandler(async (req, res) => {
     const before = existing.toObject();
     existing.passwordHash = passwordHash;
     existing.mustChangePassword = false;
-    if (email && !existing.email) existing.email = email;
+    existing.email = email;
     await existing.save();
     await recordCustomerHistory(before, existing, 'customer', existing.name);
     customer = existing;

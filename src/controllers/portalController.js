@@ -24,6 +24,8 @@ import { generateUniqueTripId } from './tripController.js';
 import { storeCustomerDocuments } from './customerDocumentController.js';
 import { publicCustomer } from './portalAuthController.js';
 import { firstNameAndInitial, publicTestimonials } from './testimonialController.js';
+import { EMAIL_IN_USE, emailInUse } from '../utils/customerEmail.js';
+import { EMAIL_OTP_LENGTH, respondWithEmailOtpError, sendEmailOtp, verifyEmailOtp } from '../utils/emailOtp.js';
 import { sendEmail } from '../utils/email.js';
 import { subscriberWelcomeEmail } from '../utils/emailTemplates.js';
 
@@ -106,6 +108,18 @@ export const getProfile = asyncHandler(async (req, res) => {
   });
 });
 
+const profileEmailValidator = body('email')
+  .trim()
+  .notEmpty()
+  .withMessage('Email is required')
+  .isLength({ max: 254 })
+  .withMessage('Email is too long')
+  .isEmail()
+  .withMessage('Enter a valid email address')
+  .normalizeEmail({ gmail_remove_dots: false });
+
+const sameEmail = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
+
 export const profileValidators = [
   body('name')
     .trim()
@@ -113,20 +127,41 @@ export const profileValidators = [
     .withMessage('Name is required')
     .isLength({ max: 50 })
     .withMessage('Name cannot exceed 50 characters'),
-  body('email')
+  profileEmailValidator,
+  body('emailCode')
+    .optional({ checkFalsy: true })
     .trim()
-    .notEmpty()
-    .withMessage('Email is required')
-    .isLength({ max: 254 })
-    .withMessage('Email is too long')
-    .isEmail()
-    .withMessage('Enter a valid email address')
-    .normalizeEmail({ gmail_remove_dots: false }),
+    .matches(new RegExp(`^[0-9]{${EMAIL_OTP_LENGTH}}$`))
+    .withMessage(`Enter the ${EMAIL_OTP_LENGTH}-digit code we emailed you`),
 ];
 
-// PATCH /api/portal/profile — name and email. The mobile number is the customer's login and can't be
-// changed here. Every change is appended to the customer's edit history (CustomerHistory), which
-// admins can see on the customer's record.
+export const profileEmailCodeValidators = [profileEmailValidator];
+
+// POST /api/portal/profile/email-code { email } — changing the email, step 1: emails a 6-digit code to
+// the NEW address (valid EMAIL_OTP_VALID_MINUTES). Nothing changes until it's entered (updateProfile).
+export const sendProfileEmailCode = asyncHandler(async (req, res) => {
+  if (!handleValidation(req, res)) return;
+  const customer = req.customer;
+  const { email } = req.body;
+  if (sameEmail(email, customer.email)) {
+    return res.status(400).json({ message: 'This is already your email address.' });
+  }
+  if (await emailInUse(email, customer._id)) {
+    return res.status(409).json({ message: EMAIL_IN_USE, code: 'EMAIL_IN_USE' });
+  }
+  try {
+    const { expiresAt, resendAt } = await sendEmailOtp({ email, purpose: 'change-email', customerId: customer._id, name: customer.name });
+    res.status(200).json({ message: `We've sent a code to ${email}`, expiresAt, resendAt });
+  } catch (err) {
+    if (respondWithEmailOtpError(err, res)) return;
+    throw err;
+  }
+});
+
+// PATCH /api/portal/profile { name, email, emailCode? } — name and email. A new email needs the code
+// sent to it by POST /profile/email-code (step 2 of changing the email); changing only the name doesn't.
+// The mobile number is the customer's login and can't be changed here. Every change is appended to the
+// customer's edit history (CustomerHistory), which admins can see on the customer's record.
 export const updateProfile = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
 
@@ -134,6 +169,21 @@ export const updateProfile = asyncHandler(async (req, res) => {
   const { name, email, mobile1 } = req.body;
   if (mobile1 !== undefined && mobile1 !== customer.mobile1) {
     return res.status(400).json({ message: "Your mobile number can't be changed. Please contact us if it needs updating." });
+  }
+
+  if (!sameEmail(email, customer.email)) {
+    if (await emailInUse(email, customer._id)) {
+      return res.status(409).json({ message: EMAIL_IN_USE, code: 'EMAIL_IN_USE' });
+    }
+    if (!req.body.emailCode) {
+      return res.status(400).json({ message: 'Enter the code we emailed to your new address.', code: 'EMAIL_CODE_REQUIRED' });
+    }
+    try {
+      await verifyEmailOtp({ email, purpose: 'change-email', customerId: customer._id, code: req.body.emailCode });
+    } catch (err) {
+      if (respondWithEmailOtpError(err, res)) return;
+      throw err;
+    }
   }
 
   const before = customer.toObject();

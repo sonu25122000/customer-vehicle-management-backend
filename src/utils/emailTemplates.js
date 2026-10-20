@@ -115,3 +115,39 @@ ${button(link, 'Set a new password &rarr;')}
   ].join('\n');
   return { subject: 'Reset your RoamWheels password', html, text };
 }
+
+// Email verification code — at signup, or when changing the email on a profile.
+export function emailCodeEmail({ code, purpose, name, validMinutes }) {
+  const firstName = escapeHtml(String(name || '').trim().split(/\s+/)[0] || 'there');
+  const why =
+    purpose === 'change-email'
+      ? 'Use this code to confirm the new email address for your RoamWheels account.'
+      : 'Use this code to verify your email and finish creating your RoamWheels account.';
+  const digits = escapeHtml(code)
+    .split('')
+    .map((d) => `<td style="padding:0 3px;"><div style="width:40px;height:52px;line-height:52px;border-radius:10px;background:#fff7ed;border:1px solid #fed7aa;font-size:26px;font-weight:bold;color:${NAVY};text-align:center;">${d}</div></td>`)
+    .join('');
+  const html = layout({
+    preheader: `Your RoamWheels code is ${code}. It works for ${validMinutes} minutes.`,
+    body: `
+<h1 style="margin:0;font-size:24px;line-height:1.3;color:${NAVY};">Your verification <span style="color:${ORANGE};">code</span></h1>
+<p style="margin:16px 0 0;font-size:15px;line-height:1.6;">Hi ${firstName}, ${why}</p>
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px auto 0;"><tr>${digits}</tr></table>
+<p style="margin:20px 0 0;font-size:14px;line-height:1.6;text-align:center;color:#64748b;">This code works once, for the next <strong>${validMinutes} minutes</strong>. Don't share it with anyone — our team will never ask for it.</p>
+<p style="margin:24px 0 0;font-size:13px;line-height:1.6;color:#64748b;">Didn't ask for this? You can ignore this email.</p>
+<p style="margin:16px 0 0;font-size:13px;line-height:1.6;color:#64748b;">Team RoamWheels</p>`,
+  });
+  const text = [
+    `Hi ${String(name || '').trim().split(/\s+/)[0] || 'there'},`,
+    '',
+    why,
+    '',
+    `Your code: ${code}`,
+    `It works once, for the next ${validMinutes} minutes. Don't share it with anyone.`,
+    '',
+    "Didn't ask for this? You can ignore this email.",
+    '',
+    'Team RoamWheels',
+  ].join('\n');
+  return { subject: `${code} is your RoamWheels verification code`, html, text };
+}

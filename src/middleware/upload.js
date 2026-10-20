@@ -8,8 +8,25 @@ const DOCUMENT_TYPES = new Set([...IMAGE_TYPES, 'application/pdf']);
 // send one file per request, which keeps each request under the hosting platform's body limit (4.5MB
 // on Vercel); this limit is the hard backstop for anything still over it (e.g. a large PDF).
 export const MAX_FILE_BYTES = 2 * 1024 * 1024;
+// Photos (JPEG/PNG/WebP) are compressed below this by the apps before upload; anything bigger is refused.
+export const MAX_PHOTO_BYTES = 1.5 * 1024 * 1024;
 const PHOTO_MAX_BYTES = MAX_FILE_BYTES;
 const DOCUMENT_MAX_BYTES = MAX_FILE_BYTES;
+
+class PhotoTooLargeError extends Error {}
+
+// Runs a multer upload, then refuses any photo over MAX_PHOTO_BYTES (PDFs keep the 2 MB cap). The error
+// goes on to handleUploadErrors like multer's own.
+function withPhotoLimit(upload) {
+  return (req, res, next) =>
+    upload(req, res, (err) => {
+      if (err) return next(err);
+      const files = req.file ? [req.file] : Object.values(req.files || {}).flat();
+      const big = files.find((f) => IMAGE_TYPES.has(f.mimetype) && f.size > MAX_PHOTO_BYTES);
+      if (big) return next(new PhotoTooLargeError('Photo is too large — the maximum is 1.5 MB'));
+      next();
+    });
+}
 
 function fileFilterFor(allowedTypes) {
   return (req, file, cb) => {
@@ -20,7 +37,7 @@ function fileFilterFor(allowedTypes) {
   };
 }
 
-export const uploadVehiclePhotos = multer({
+export const uploadVehiclePhotos = withPhotoLimit(multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: PHOTO_MAX_BYTES },
   fileFilter: fileFilterFor(IMAGE_TYPES),
@@ -30,9 +47,9 @@ export const uploadVehiclePhotos = multer({
   { name: 'passengerSide', maxCount: 1 },
   { name: 'driverSide', maxCount: 1 },
   { name: 'additional', maxCount: 5 },
-]);
+]));
 
-export const uploadCustomerDocuments = multer({
+export const uploadCustomerDocuments = withPhotoLimit(multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: DOCUMENT_MAX_BYTES },
   fileFilter: fileFilterFor(DOCUMENT_TYPES),
@@ -42,22 +59,22 @@ export const uploadCustomerDocuments = multer({
   { name: 'aadhaar', maxCount: 1 },
   { name: 'aadhaarBack', maxCount: 1 },
   { name: 'other', maxCount: 1 },
-]);
+]));
 
-export const uploadProfilePhoto = multer({
+export const uploadProfilePhoto = withPhotoLimit(multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: PHOTO_MAX_BYTES },
   fileFilter: fileFilterFor(IMAGE_TYPES),
-}).single('photo');
+}).single('photo'));
 
-export const uploadVehicleDocuments = multer({
+export const uploadVehicleDocuments = withPhotoLimit(multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: DOCUMENT_MAX_BYTES },
   fileFilter: fileFilterFor(DOCUMENT_TYPES),
 }).fields([
   { name: 'rc', maxCount: 1 },
   { name: 'insurance', maxCount: 1 },
-]);
+]));
 
 export function handleUploadErrors(err, req, res, next) {
   if (err instanceof multer.MulterError) {

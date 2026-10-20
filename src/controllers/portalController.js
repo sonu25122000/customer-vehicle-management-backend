@@ -113,7 +113,15 @@ export const profileValidators = [
     .withMessage('Name is required')
     .isLength({ max: 50 })
     .withMessage('Name cannot exceed 50 characters'),
-  body('email').optional({ checkFalsy: true }).trim().isEmail().withMessage('Enter a valid email address').normalizeEmail({ gmail_remove_dots: false }),
+  body('email')
+    .trim()
+    .notEmpty()
+    .withMessage('Email is required')
+    .isLength({ max: 254 })
+    .withMessage('Email is too long')
+    .isEmail()
+    .withMessage('Enter a valid email address')
+    .normalizeEmail({ gmail_remove_dots: false }),
 ];
 
 // PATCH /api/portal/profile — name and email. The mobile number is the customer's login and can't be
@@ -436,10 +444,9 @@ export const subscribeValidators = [
 const WELCOME_CLAIM_MS = 5 * 60 * 1000;
 
 // POST /api/portal/subscribe { email } — the home page's "Let us know your email" form. Subscribing an
-// email that's already on the list just succeeds again (no duplicate record, nothing revealed). Anyone
-// who hasn't received the welcome email yet gets it (utils/email.js) — new subscribers, and earlier ones
-// whose email couldn't be sent at the time. It's sent once per address; if it can't be sent, the
-// subscription still counts.
+// email that's already on the list just succeeds again (no duplicate record, nothing revealed). Every
+// subscribe sends the welcome email (utils/email.js) — new and existing subscribers alike. If it can't be
+// sent, the subscription still counts. (The route's rate limit caps how often one visitor can submit.)
 export const subscribe = asyncHandler(async (req, res) => {
   if (!handleValidation(req, res)) return;
   const { email } = req.body;
@@ -449,7 +456,6 @@ export const subscribe = asyncHandler(async (req, res) => {
   const claimed = await Subscriber.findOneAndUpdate(
     {
       email,
-      welcomeSentAt: null,
       $or: [{ welcomeClaimedAt: null }, { welcomeClaimedAt: { $lt: new Date(now - WELCOME_CLAIM_MS) } }],
     },
     { $set: { welcomeClaimedAt: now } }

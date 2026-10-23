@@ -120,9 +120,11 @@ ${button(link, 'Set a new password &rarr;')}
 export function emailCodeEmail({ code, purpose, name, validMinutes }) {
   const firstName = escapeHtml(String(name || '').trim().split(/\s+/)[0] || 'there');
   const why =
-    purpose === 'change-email'
-      ? 'Use this code to confirm the new email address for your RoamWheels account.'
-      : 'Use this code to verify your email and finish creating your RoamWheels account.';
+    purpose === 'login'
+      ? 'Use this code to log in to your RoamWheels account.'
+      : purpose === 'change-email'
+        ? 'Use this code to confirm the new email address for your RoamWheels account.'
+        : 'Use this code to verify your email and finish creating your RoamWheels account.';
   const digits = escapeHtml(code)
     .split('')
     .map((d) => `<td style="padding:0 3px;"><div style="width:40px;height:52px;line-height:52px;border-radius:10px;background:#fff7ed;border:1px solid #fed7aa;font-size:26px;font-weight:bold;color:${NAVY};text-align:center;">${d}</div></td>`)
@@ -134,7 +136,7 @@ export function emailCodeEmail({ code, purpose, name, validMinutes }) {
 <p style="margin:16px 0 0;font-size:15px;line-height:1.6;">Hi ${firstName}, ${why}</p>
 <table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px auto 0;"><tr>${digits}</tr></table>
 <p style="margin:20px 0 0;font-size:14px;line-height:1.6;text-align:center;color:#64748b;">This code works once, for the next <strong>${validMinutes} minutes</strong>. Don't share it with anyone — our team will never ask for it.</p>
-<p style="margin:24px 0 0;font-size:13px;line-height:1.6;color:#64748b;">Didn't ask for this? You can ignore this email.</p>
+<p style="margin:24px 0 0;font-size:13px;line-height:1.6;color:#64748b;">Didn't ask for this? You can ignore this email${purpose === 'login' ? ' — nobody can log in without the code' : ''}.</p>
 <p style="margin:16px 0 0;font-size:13px;line-height:1.6;color:#64748b;">Team RoamWheels</p>`,
   });
   const text = [
@@ -149,5 +151,6 @@ export function emailCodeEmail({ code, purpose, name, validMinutes }) {
     '',
     'Team RoamWheels',
   ].join('\n');
-  return { subject: `${code} is your RoamWheels verification code`, html, text };
+  const subject = purpose === 'login' ? `${code} is your RoamWheels login code` : `${code} is your RoamWheels verification code`;
+  return { subject, html, text };
 }

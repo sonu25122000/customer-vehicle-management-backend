@@ -188,6 +188,83 @@ export const login = asyncHandler(async (req, res) => {
   res.status(200).json({ customer: publicCustomer(customer) });
 });
 
+// ---------- Login with an emailed code (no password) ----------
+
+// "kun123658@gmail.com" -> "k*******8@gmail.com": enough for the guest to recognise their address
+// without showing it in full to whoever types the mobile number.
+export function maskEmail(email) {
+  const [local, domain] = String(email).split('@');
+  if (!domain) return '';
+  const shown = local.length <= 2 ? local[0] : `${local[0]}${'*'.repeat(Math.min(local.length - 2, 8))}${local[local.length - 1]}`;
+  return `${local.length <= 2 ? `${shown}*` : shown}@${domain}`;
+}
+
+export const loginCodeRequestValidators = [mobileValidator];
+export const loginWithCodeValidators = [
+  mobileValidator,
+  body('code')
+    .trim()
+    .matches(new RegExp(`^[0-9]{${EMAIL_OTP_LENGTH}}$`))
+    .withMessage(`Enter the ${EMAIL_OTP_LENGTH}-digit code we emailed you`),
+];
+
+// The account a code login is for. Sends the error response and returns null when it can't use one:
+// no account, an admin-created record nobody has signed up for yet, or no email on file.
+async function codeLoginAccount(mobile, res) {
+  const customer = await Customer.findOne({ mobile1: mobile, isDeleted: false }).select('+passwordHash');
+  if (!customer) {
+    res.status(404).json({ message: 'No account with this mobile number. Please create an account.', code: 'NO_ACCOUNT' });
+    return null;
+  }
+  if (!customer.passwordHash) {
+    res.status(409).json({ message: 'Please sign up with this mobile number first.', code: 'SIGNUP_REQUIRED' });
+    return null;
+  }
+  if (!customer.email) {
+    res.status(400).json({ message: 'There is no email on this account. Please log in with your password.', code: 'NO_EMAIL' });
+    return null;
+  }
+  return customer;
+}
+
+// POST /api/portal/auth/login/email-code { mobile } — emails a 6-digit login code to the email on that
+// account (valid EMAIL_OTP_VALID_MINUTES). Answers with the address masked.
+export const sendLoginEmailCode = asyncHandler(async (req, res) => {
+  if (!handleValidation(req, res)) return;
+  const customer = await codeLoginAccount(req.body.mobile, res);
+  if (!customer) return;
+  try {
+    const { expiresAt, resendAt } = await sendEmailOtp({ email: customer.email, purpose: 'login', customerId: customer._id, name: customer.name });
+    const email = maskEmail(customer.email);
+    res.status(200).json({ message: `We've sent a code to ${email}`, email, expiresAt, resendAt });
+  } catch (err) {
+    if (respondWithEmailOtpError(err, res)) return;
+    throw err;
+  }
+});
+
+// POST /api/portal/auth/login/verify { mobile, code } — logs in with the code from the step above.
+// Getting the code proves the guest can read the account's email (like a forgot-password link), so a
+// temporary password from the team no longer has to be changed first.
+export const loginWithCode = asyncHandler(async (req, res) => {
+  if (!handleValidation(req, res)) return;
+  const customer = await codeLoginAccount(req.body.mobile, res);
+  if (!customer) return;
+  try {
+    await verifyEmailOtp({ email: customer.email, purpose: 'login', customerId: customer._id, code: req.body.code });
+  } catch (err) {
+    if (respondWithEmailOtpError(err, res)) return;
+    throw err;
+  }
+
+  if (customer.mustChangePassword) {
+    customer.mustChangePassword = false;
+    await customer.save();
+  }
+  issueSession(customer, res);
+  res.status(200).json({ customer: publicCustomer(customer) });
+});
+
 // POST /api/portal/auth/logout
 export const logout = asyncHandler(async (_req, res) => {
   res.clearCookie(CUSTOMER_COOKIE, { ...cookieOptions(), maxAge: undefined });

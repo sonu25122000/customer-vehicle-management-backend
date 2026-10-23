@@ -94,6 +94,37 @@ const forgotPasswordLimiter = rateLimit({
  *     responses:
  *       200: { description: 'Logged in (sets the customerToken cookie). customer.mustChangePassword tells the site to ask for a new password first.' }
  *       401: { description: Invalid credentials }
+ * /portal/auth/login/email-code:
+ *   post:
+ *     tags: [Customer Site]
+ *     summary: Login without a password, step 1 — email a 6-digit code (valid 10 minutes) to the account's email
+ *     description: Resend after 30 seconds, at most 5 codes per hour per account.
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { type: object, required: [mobile], properties: { mobile: { type: string, example: '9876543210' } } }
+ *     responses:
+ *       200: { description: "Code sent — { email (masked, e.g. k*****8@gmail.com), expiresAt, resendAt }" }
+ *       400: { description: The account has no email on file (NO_EMAIL) — log in with the password instead }
+ *       404: { description: No account with this mobile number (NO_ACCOUNT) }
+ *       409: { description: Admin-created account that hasn't been claimed yet (SIGNUP_REQUIRED) }
+ *       429: { description: Asked too soon (EMAIL_OTP_COOLDOWN, retryAfter) or too often (EMAIL_OTP_LIMIT) }
+ * /portal/auth/login/verify:
+ *   post:
+ *     tags: [Customer Site]
+ *     summary: Login without a password, step 2 — log in with the emailed code
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { type: object, required: [mobile, code], properties: { mobile: { type: string }, code: { type: string } } }
+ *     responses:
+ *       200: { description: Logged in (sets the customerToken cookie) }
+ *       400: { description: Wrong or expired code (EMAIL_OTP_INVALID / EMAIL_OTP_EXPIRED) }
+ *       429: { description: Too many wrong codes (EMAIL_OTP_LOCKED) }
  * /portal/auth/logout:
  *   post:
  *     tags: [Customer Site]
@@ -156,6 +187,8 @@ const forgotPasswordLimiter = rateLimit({
 router.post('/auth/signup/email-code', emailCodeLimiter, auth.signupValidators, auth.sendSignupEmailCode);
 router.post('/auth/signup', authLimiter, auth.signupWithCodeValidators, auth.signup);
 router.post('/auth/login', authLimiter, auth.loginValidators, auth.login);
+router.post('/auth/login/email-code', emailCodeLimiter, auth.loginCodeRequestValidators, auth.sendLoginEmailCode);
+router.post('/auth/login/verify', authLimiter, auth.loginWithCodeValidators, auth.loginWithCode);
 router.post('/auth/logout', auth.logout);
 router.get('/auth/me', requireCustomerSession, auth.me);
 router.post('/auth/change-password', authLimiter, requireCustomerSession, auth.changePasswordValidators, auth.changePassword);

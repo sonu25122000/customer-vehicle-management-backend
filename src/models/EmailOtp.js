@@ -1,10 +1,10 @@
 import mongoose from 'mongoose';
 
-export const EMAIL_OTP_PURPOSES = ['signup', 'change-email'];
+export const EMAIL_OTP_PURPOSES = ['signup', 'change-email', 'login'];
 
 // The latest email verification code for one address and purpose (utils/emailOtp.js): proving a guest
 // owns the email they sign up with ('signup'), or the new one they switch to ('change-email', tied to
-// that customer). Only a hash of the code is kept. One row per email + purpose + customer; asking again
+// that customer), and logging in without a password ('login', sent to the account's email, tied to it). Only a hash of the code is kept. One row per email + purpose + customer; asking again
 // replaces the code. MongoDB deletes rows a couple of hours after their last change (TTL index).
 const emailOtpSchema = new mongoose.Schema(
   {
